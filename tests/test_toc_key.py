@@ -40,12 +40,20 @@ def test_template_oracle_rejects_wrong_size() -> None:
         toc_key.TemplateOracle(bytes(32))
 
 
-def test_real_template_is_three_distinct_blocks() -> None:
-    """The retail template is three *distinct* blocks, so ECB-of-zeros is ruled out."""
-    oracle = toc_key.TemplateOracle()
+def test_three_distinct_blocks_rule_out_ecb_of_zeros() -> None:
+    """A template of three *distinct* blocks cannot be ECB-of-zeros, by construction."""
+    template = bytes.fromhex("11" * 16 + "22" * 16 + "33" * 16)
+    oracle = toc_key.TemplateOracle(template)
     assert oracle.distinct
+    # ECB of a zero run yields three *equal* blocks, so it can never match.
     assert oracle.test_ecb(FAKE_KEY) is None
     assert oracle.test_ecb(bytes.fromhex("ff" * 32)) is None
+
+
+def test_template_oracle_requires_explicit_bytes() -> None:
+    """No committed default: the caller supplies the build-specific template."""
+    with pytest.raises(TypeError):
+        toc_key.TemplateOracle()
 
 
 def test_ctr_hit_is_found_for_a_synthetic_template() -> None:

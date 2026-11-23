@@ -1,10 +1,26 @@
+"""Parsing the RPF9 TOC entry table and the name blob.
+
+Each TOC entry is four little-endian dwords (16 bytes). The layout of ``dword1``
+selects the entry kind:
+
+* ``dword1 == 0x7FFFFF00`` -> **directory**: ``dword0`` is the name offset,
+  ``dword2``/``dword3`` are the first child index and child count.
+* ``dword1`` high bit clear -> **binary file**: the two dwords form a 64-bit packed
+  field -- name offset (16 bits), file size (24 bits) and start block (24 bits).
+* ``dword1`` high bit set -> **resource**: a different packing of the same fields.
+
+The name blob is a NUL-separated ASCII pool; entries reference it by byte offset.
+This is a clean-room reconstruction from observed bytes, so the resource packing is
+best-effort and marked ``RESOURCE`` rather than claimed exact.
+"""
+
 from __future__ import annotations
 
 import struct
 from dataclasses import dataclass
 from enum import Enum, auto
 
-DIR_MARKER = 0x7FFFFF00
+DIR_MARKER = 0x7FFFFF00  # dword1 value that marks a directory entry
 
 
 class EntryKind(Enum):
@@ -16,6 +32,8 @@ class EntryKind(Enum):
 
 @dataclass(frozen=True, slots=True)
 class Rpf9Entry:
+    """One decoded TOC entry, normalised across the three dword1 layouts."""
+
     index: int
     kind: EntryKind
     name_offset: int
@@ -28,6 +46,7 @@ class Rpf9Entry:
 
 
 def parse_entry(index: int, raw: bytes, offset: int = 0) -> Rpf9Entry:
+    """Decode one 16-byte entry at ``offset`` in ``raw`` (the TOC blob)."""
     d0, d1, d2, d3 = struct.unpack_from("<IIII", raw, offset)
     if d1 == DIR_MARKER:
         return Rpf9Entry(
@@ -42,6 +61,7 @@ def parse_entry(index: int, raw: bytes, offset: int = 0) -> Rpf9Entry:
             entries_count=d3,
         )
     if (d1 & 0x80000000) == 0:
+        # Binary file: dword0|dword1 is one 64-bit field -> name(16) size(24) block(24).
         packed = d0 | (d1 << 32)
         name_off = packed & 0xFFFF
         file_size = (packed >> 16) & 0xFFFFFF
@@ -83,6 +103,7 @@ def parse_entry(index: int, raw: bytes, offset: int = 0) -> Rpf9Entry:
 
 
 def read_name(names: bytes, offset: int) -> str:
+    """Read the NUL-terminated ASCII name at ``offset``; '' if not printable ASCII."""
     if offset >= len(names):
         return ""
     end = names.find(b"\x00", offset)
@@ -97,6 +118,7 @@ def read_name(names: bytes, offset: int) -> str:
 
 
 def names_plausibility(names: bytes) -> float:
+    """Fraction of bytes that are NUL or printable ASCII -- a wrong-key detector."""
     if not names or not any(names):
         return 0.0
     useful = sum(1 for b in names if b == 0 or 0x20 <= b <= 0x7E)

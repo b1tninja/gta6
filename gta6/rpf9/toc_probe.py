@@ -6,7 +6,23 @@ from pathlib import Path
 from gta6.rpf9.entries import DIR_MARKER, parse_entry
 from gta6.rpf9.format import HEADER_SIZE, RPF9_MAGIC
 from gta6.rpf9.head import parse_toc_head
-from gta6.rpf9.template import CLEARTEXT_TEMPLATE_END, has_known_template, split_toc_blob
+
+# Structural offsets of the known-plaintext region (bytes are build-specific and
+# not committed; see gta6.rpf9.toc_key).
+TEMPLATE_OFFSET = 16
+CLEARTEXT_TEMPLATE_END = 64
+
+
+def split_toc_blob(toc: bytes) -> dict[str, bytes]:
+    """Separate variable head, template region, and encrypted tail."""
+    head = toc[:TEMPLATE_OFFSET]
+    template = (
+        toc[TEMPLATE_OFFSET:CLEARTEXT_TEMPLATE_END]
+        if len(toc) >= CLEARTEXT_TEMPLATE_END
+        else b""
+    )
+    tail = toc[CLEARTEXT_TEMPLATE_END:] if len(toc) > CLEARTEXT_TEMPLATE_END else b""
+    return {"head": head, "template": template, "tail": tail}
 
 
 def read_toc(path: Path, base: int = 0) -> bytes:
@@ -56,7 +72,6 @@ def probe_archive(path: Path) -> dict[str, object]:
         "path": str(path),
         "toc_size": len(toc),
         "encryption_field": encryption_field,
-        "has_global_template": has_known_template(toc),
         "head_hex": parts["head"].hex(),
         "toc_head": (
             {

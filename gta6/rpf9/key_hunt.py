@@ -5,7 +5,7 @@ from pathlib import Path
 from gta6.rpf9.crypto import decrypt_toc_and_names
 from gta6.rpf9.entries import DIR_MARKER, names_plausibility
 from gta6.rpf9.keys import scan_exe_for_key_candidates
-from gta6.rpf9.template import CLEARTEXT_TEMPLATE_END
+from gta6.rpf9.toc_key import CLEARTEXT_TEMPLATE_END
 
 
 def _score_toc_tail(plain_tail: bytes) -> float:

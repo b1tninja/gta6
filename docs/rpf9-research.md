@@ -41,7 +41,7 @@ inter-entry padding is literal zeros. **Extracting file content therefore does n
 need the key** — only the TOC and name tables do. The in-tree reader inflates the
 data region directly.
 
-## 3. Known plaintext in the TOC blob
+## 3. Known plaintext in the TOC blob (a key-recovery aid)
 
 The encrypted `TOC || names` blob has a fixed structure at its start:
 
@@ -49,20 +49,37 @@ The encrypted `TOC || names` blob has a fixed structure at its start:
 blob offset
 0        16                    64                    toc_size
 ┌────────┬────────────────────┬──────────────────────┬─ ─ ─ ─ ─ ─ ─┐
-│ head   │ 48-BYTE TEMPLATE   │ entry table          │  names       │
-│ 16 B   │ (constant, every   │ (ciphertext)         │  region      │
-│ varies │  archive/base)     │                      │              │
+│ head   │ 48-BYTE REGION     │ entry table          │  names       │
+│ 16 B   │ (constant within   │ (ciphertext)         │  region      │
+│ varies │  one build)        │                      │              │
 └────────┴────────────────────┴──────────────────────┴─ ─ ─ ─ ─ ─ ─┘
 ```
 
-- The **48-byte template** at a constant offset is byte-identical across every
-  archive and base sampled. It is the primary known-plaintext anchor.
-- Some archives also have **long all-zero runs** in the names region — additional
-  guaranteed plaintext.
+- Within one build, the **48-byte region** at a constant offset is byte-identical
+  across every archive and base sampled, and some archives also have **long
+  all-zero runs** in the names region. Together that is ≥ ~112 bytes of guaranteed
+  plaintext per archive, enough to reject a wrong key decisively. The region is
+  three *distinct* 16-byte blocks, which is what rules out "AES-ECB of zeros".
+- These bytes are **build-specific and are not committed** to the repo. They are a
+  *key-recovery* aid: you supply them (from your own survey) to the key sweep, which
+  uses them as a known-plaintext oracle. They are deliberately **not** used to decide
+  whether an archive is valid — see §3b.
 
-Together that is ≥ ~112 bytes of guaranteed plaintext per archive (up to ~700 B in
-small archives), enough to reject a wrong key decisively. The template is three
-*distinct* 16-byte blocks, which is what rules out "AES-ECB of zeros".
+## 3b. Structural validation (build-independent)
+
+Whether an archive is well-formed is checked by *structure*, not by matching any
+particular bytes, so the checks stay valid across builds and the eventual production
+release. `gta6/rpf9/validate.py` (CLI: `python -m gta6 rpf9-validate`) verifies:
+
+- the header is self-consistent (magic, non-zero TOC size, entry count divides the
+  TOC size);
+- the TOC/names/data regions fit inside the file and the data region is present;
+- the entry table is internally coherent (name offsets land inside the names region,
+  directory child ranges stay inside the TOC);
+- the data region actually inflates (a few sampled payloads are raw-deflate).
+
+None of these depend on the template bytes, so they are the preferred correctness
+check.
 
 ## 4. Crypto model
 
@@ -109,18 +126,18 @@ tooling recovers it from the executable:
 
 ```powershell
 python -m gta6 rpf9-recover-keyctx     # derive the key-context blob address
-python -m gta6 rpf9-recover-keys       # sweep the exe for the TOC key
+python -m gta6 rpf9-recover-keys --template-hex <96 hex chars>   # sweep for the TOC key
 ```
 
-The known-plaintext template is used as an oracle: candidate keys are accepted only
-if they reproduce the template under the whitened-CBC model.
+The known-plaintext region (supplied via `--template-hex`) is used as an oracle:
+candidate keys are accepted only if they reproduce it under the whitened-CBC model.
 
 ## 5. Open questions
 
 - The exact whitening byte orderings are pinned by a dynamic trace of the AES block
   transform; until that trace is folded in, the whitening/IV fields are read from the
   blob offsets and exposed as overridable fields.
-- A second occurrence of the 48-byte template appears deeper in some archives
+- A second occurrence of the 48-byte region appears deeper in some archives
   (inside the names region) — unexplained; candidates include a second table copy or
   a directory-node marker.
 - The semantics of the head dword fields and the `encryption` field beyond the

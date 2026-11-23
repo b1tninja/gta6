@@ -62,9 +62,14 @@ Xbox builds use **RPF9** (magic `0x52504639`). The in-tree reader parses the
 container, entry table and name table, and inflates the (cleartext) data region:
 
 ```powershell
-python -m gta6 rpf9-info    pack\story000\story000_script.rpf
-python -m gta6 rpf9-extract pack\story000\story000_script.rpf
+python -m gta6 rpf9-info     pack\story000\story000_script.rpf
+python -m gta6 rpf9-extract  pack\story000\story000_script.rpf
+python -m gta6 rpf9-validate pack\story000\story000_script.rpf
 ```
+
+`rpf9-validate` checks an archive **structurally** (header self-consistency, region
+bounds, entry-table coherence, and that the data region inflates). It does not match
+any build-specific bytes, so it stays valid across builds and the production release.
 
 The TOC and name tables are **encrypted** on this retail layout. Set
 `GTA6_AES_KEY_HEX` (hex) or `GTA6_AES_KEY_FILE` (raw key file) in `.env` once a
@@ -80,8 +85,12 @@ than hard-coded:
 
 ```powershell
 python -m gta6 rpf9-recover-keyctx        # derive the key-context blob address
-python -m gta6 rpf9-recover-keys          # sweep the exe for the TOC key
+python -m gta6 rpf9-recover-keys --template-hex <96 hex chars>   # sweep for the TOC key
 ```
+
+`rpf9-recover-keys` uses a known-plaintext region as an oracle. Those bytes are
+build-specific and are **not** committed; pass the 48-byte region (96 hex chars) from
+your own survey with `--template-hex`.
 
 `rpf9-recover-keyctx` locates the blob by scanning for the provider descriptor
 getter and validating the registry structurally (the getter byte pattern is
@@ -101,9 +110,9 @@ behaviour with no network access.
 ## Research notes
 
 A publishable summary of the RPF9 findings lives in
-[docs/rpf9-research.md](docs/rpf9-research.md) - container layout, the known-
-plaintext model, what was ruled out, and the key-recovery method, described without
-build-specific constants.
+[docs/rpf9-research.md](docs/rpf9-research.md) - container layout, structural
+validation, the known-plaintext key-recovery model, what was ruled out, and the
+key-recovery method, described without build-specific constants.
 
 The day-to-day working notes under docs/notes/ are kept local and **not**
 published, because they quote build-specific static addresses, Ghidra symbols, and
@@ -116,9 +125,13 @@ raw key/template bytes lifted from the proprietary executable.
   `TOC || names` blob, then a **cleartext** data region of raw-deflate streams.
 - **Data region is cleartext**, so file *content* extraction does not need the key;
   only the TOC/name tables do.
-- **Known plaintext:** the TOC blob contains a fixed 48-byte template at a constant
-  offset in every archive, plus (in some archives) long all-zero name runs — enough
-  guaranteed plaintext to reject wrong keys decisively.
+- **Known plaintext (key-recovery aid):** within one build the TOC blob has a fixed
+  48-byte region at a constant offset, plus (in some archives) long all-zero name
+  runs — enough guaranteed plaintext to reject wrong keys. These bytes are
+  build-specific and not committed; they feed the key sweep, not the validity check.
+- **Validity is structural:** `rpf9-validate` confirms an archive is well-formed from
+  its header, region bounds, entry table and inflate behaviour — no byte matching, so
+  it holds across builds.
 - **Ruled out:** plain AES-256-ECB of the whole blob, a single global keystream, and
   simple header-derived keys.
 - **Identified:** whitened AES-256-CBC (above). Key recovery is the remaining step.

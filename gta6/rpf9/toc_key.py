@@ -23,6 +23,11 @@ every archive, which makes them a searchable fingerprint:
 
 ``sweep_exe`` searches the executable for any 16/24/32-byte window that is a
 plausible key and tests it against the fingerprint under each mode.
+
+The template *bytes* are build-specific and are not committed here: pass them to
+``TemplateOracle`` (or ``sweep_*``) when you have a survey. For "is this a valid
+archive" prefer the structural checks in :mod:`gta6.rpf9.validate`, which do not
+depend on any particular byte values.
 """
 
 from __future__ import annotations
@@ -33,19 +38,14 @@ from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from gta6.rpf9.template import (
-    CLEARTEXT_TEMPLATE_END,
-    GLOBAL_BLOCK_16,
-    GLOBAL_BLOCK_32,
-    GLOBAL_BLOCK_48,
-)
-
-TEMPLATE_OFFSET = 16
-TEMPLATE_SIZE = CLEARTEXT_TEMPLATE_END - TEMPLATE_OFFSET
 KEY_LENGTHS = (16, 24, 32)
 
-# The 48-byte region every archive shares. See docs/notes/2026-11-20-rpf9-xor-structure.md
-GLOBAL_TEMPLATE = GLOBAL_BLOCK_16 + GLOBAL_BLOCK_32 + GLOBAL_BLOCK_48
+# The known-plaintext region of the TOC blob: a fixed 48-byte window at a constant
+# offset. Its *bytes* are build-specific and are NOT committed here -- supply them
+# to TemplateOracle (see the module docstring). These are the structural offsets.
+TEMPLATE_OFFSET = 16
+CLEARTEXT_TEMPLATE_END = 64
+TEMPLATE_SIZE = CLEARTEXT_TEMPLATE_END - TEMPLATE_OFFSET
 ZERO_BLOCK = bytes(16)
 
 
@@ -141,7 +141,7 @@ class KeyHit:
 class TemplateOracle:
     """Tests candidate keys against the 48-byte region shared by every archive."""
 
-    def __init__(self, template: bytes = GLOBAL_TEMPLATE) -> None:
+    def __init__(self, template: bytes) -> None:
         if len(template) != TEMPLATE_SIZE:
             msg = f"template must be {TEMPLATE_SIZE} bytes, got {len(template)}"
             raise ValueError(msg)
@@ -235,7 +235,7 @@ def key_candidates_from_pe(
 def sweep_exe(
     exe: Path,
     *,
-    template: bytes = GLOBAL_TEMPLATE,
+    template: bytes,
     nonces: list[tuple[str, bytes]] | None = None,
     key_lengths: tuple[int, ...] = (32, 24, 16),
     start: int = 0,
@@ -295,7 +295,7 @@ def sweep_range(
     *,
     start: int,
     end: int,
-    template: bytes = GLOBAL_TEMPLATE,
+    template: bytes,
     nonces: list[tuple[str, bytes]] | None = None,
     key_lengths: tuple[int, ...] = (32, 24, 16),
     stop_after: int = 0,
@@ -325,7 +325,7 @@ def sweep_range(
 def sweep_file(
     exe: Path,
     *,
-    template: bytes = GLOBAL_TEMPLATE,
+    template: bytes,
     nonces: list[tuple[str, bytes]] | None = None,
     key_lengths: tuple[int, ...] = (32, 24, 16),
     workers: int = 1,

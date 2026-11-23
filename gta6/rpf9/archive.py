@@ -1,3 +1,18 @@
+"""High-level RPF9 archive reader: open, decrypt-if-possible, list, extract.
+
+:class:`Rpf9Archive` locates the first base in a file, reads its header, and tries to
+make the TOC/names readable. The decryption state (``self.decryption``) is one of:
+
+* ``plaintext``       -- header says the TOC is cleartext (encryption 0 / "OPEN");
+* ``encrypted_no_key`` -- TOC is encrypted and no AES key is configured;
+* ``aes256_ecb``      -- decrypted and the names blob looks like ASCII (key accepted);
+* ``wrong_key``       -- decrypted but the names blob is not plausible ASCII.
+
+The data region is always cleartext, so :meth:`extract_all` only needs a readable TOC
+to know *where* the files are; the payload bytes themselves are read directly and
+raw-inflated. File payloads are addressed as ``base + start_block * 512``.
+"""
+
 from __future__ import annotations
 
 import zlib
@@ -15,11 +30,14 @@ from gta6.rpf9.format import (
 )
 from gta6.rpf9.keys import load_aes_key
 
+# Fraction of names-blob bytes that must look like ASCII to accept a decrypted key.
 DEFAULT_NAME_PLAUSIBILITY = 0.85
 
 
 @dataclass
 class Rpf9Archive:
+    """An opened RPF9 base with its header, (maybe) decrypted tables and entries."""
+
     header: Rpf9Header
     toc_plain: bytes | None = None
     names_plain: bytes | None = None
@@ -28,7 +46,9 @@ class Rpf9Archive:
 
     @classmethod
     def open(cls, path: Path, *, base_offset: int | None = None) -> Rpf9Archive:
+        """Open the first base (or ``base_offset``) and attempt to read its tables."""
         path = path.resolve()
+        # Scan a bounded prefix for the magic rather than the whole (possibly huge) file.
         with path.open("rb") as fh:
             probe = fh.read(min(path.stat().st_size, 4 * 1024 * 1024))
         bases = find_rpf9_bases(probe)
@@ -42,6 +62,7 @@ class Rpf9Archive:
         return arc
 
     def _load_tables(self) -> None:
+        """Read the TOC||names blob and set the decryption state; parse entries if readable."""
         start = self.header.toc_offset
         end = self.header.data_offset
         with self.header.path.open("rb") as fh:
@@ -120,6 +141,7 @@ class Rpf9Archive:
         out.append(rel)
 
     def _read_file_payload(self, blob: bytes, entry_index: int) -> bytes | None:
+        """Slice a file's bytes out of the data region (cleartext; addressed by block)."""
         entry = self.entries[entry_index]
         if entry.kind == EntryKind.DIRECTORY:
             return None
@@ -131,6 +153,7 @@ class Rpf9Archive:
 
     @staticmethod
     def _maybe_inflate(data: bytes, compressed: bool) -> bytes:
+        """Raw-inflate (wbits=-15); returns ``data`` unchanged if it is not deflate."""
         if not compressed or not data:
             return data
         try:
@@ -145,6 +168,7 @@ class Rpf9Archive:
         *,
         decompress: bool = True,
     ) -> dict[str, int]:
+        """Write every file entry under ``output_dir``; needs a readable TOC."""
         if not self.toc_readable():
             msg = f"TOC not readable (decryption={self.decryption}); set GTA6_AES_KEY_HEX"
             raise RuntimeError(msg)

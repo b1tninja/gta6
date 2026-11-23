@@ -114,6 +114,22 @@ def _cmd_rpf9_toc_probe(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_rpf9_validate(args: argparse.Namespace) -> int:
+    """Structurally validate archives (header/regions/entry table/inflate)."""
+    from gta6.rpf9.validate import validate_paths
+
+    p = load_paths()
+    if args.archives:
+        paths = [a if a.is_absolute() else p.game_root / a for a in args.archives]
+    else:
+        paths = sorted(
+            p.game_root.rglob("*.rpf"),
+            key=lambda x: x.stat().st_size,
+        )[:12]
+    print(json.dumps(validate_paths(paths), indent=2))
+    return 0
+
+
 def _cmd_rpf9_correlate(args: argparse.Namespace) -> int:
     from gta6.rpf9.correlate import correlate_archives
 
@@ -144,12 +160,26 @@ def _cmd_rpf9_recover_keys(args: argparse.Namespace) -> int:
     from gta6.rpf9 import toc_key
 
     p = load_paths()
+    if args.exe is None:
+        print("pass the exe path (or set GTA6_GAME_EXE)", file=sys.stderr)
+        return 1
     exe = args.exe if args.exe.is_absolute() else p.game_root / args.exe
     if not exe.is_file():
         print(f"not found: {exe}", file=sys.stderr)
         return 1
     arch = args.archive if args.archive.is_absolute() else p.game_root / args.archive
-    template = toc_key.GLOBAL_TEMPLATE
+    if not args.template_hex:
+        print(
+            "supply the known-plaintext template with --template-hex "
+            "(48 bytes / 96 hex chars from your survey)",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        template = bytes.fromhex(args.template_hex)
+    except ValueError:
+        print("--template-hex must be hex", file=sys.stderr)
+        return 1
     nonces: list[tuple[str, bytes]] = [("zero", bytes(16))]
     if arch.is_file():
         nonces = toc_key.standard_nonces(arch.read_bytes()[:32], arch)
@@ -384,9 +414,21 @@ def main(argv: list[str] | None = None) -> int:
     )
     xor_survey.set_defaults(func=_cmd_rpf9_xor_survey)
 
-    probe = sub.add_parser("rpf9-toc-probe", help="Parse cleartext TOC head + template")
+    probe = sub.add_parser("rpf9-toc-probe", help="Parse cleartext TOC head + regions")
     probe.add_argument("archives", nargs="*", type=Path)
     probe.set_defaults(func=_cmd_rpf9_toc_probe)
+
+    validate = sub.add_parser(
+        "rpf9-validate",
+        help="Structurally validate archives (no build-specific bytes)",
+    )
+    validate.add_argument(
+        "archives",
+        nargs="*",
+        type=Path,
+        help="Optional paths (default: 12 smallest .rpf)",
+    )
+    validate.set_defaults(func=_cmd_rpf9_validate)
 
     hunt = sub.add_parser(
         "rpf9-hunt-keys",
@@ -410,14 +452,19 @@ def main(argv: list[str] | None = None) -> int:
 
     recover = sub.add_parser(
         "rpf9-recover-keys",
-        help="Sweep the leaked exe for the TOC key using the global template",
+        help="Sweep the exe for the TOC key using a known-plaintext template",
     )
-    recover.add_argument("exe", type=Path, nargs="?", default=Path("game_scarlett_master.exe"))
+    recover.add_argument("exe", type=Path, nargs="?", default=None)
     recover.add_argument(
         "archive",
         type=Path,
         nargs="?",
         default=Path("pack/story000/story000_script.rpf"),
+    )
+    recover.add_argument(
+        "--template-hex",
+        default=None,
+        help="known-plaintext template, 96 hex chars (48 bytes) from your survey",
     )
     recover.add_argument("--key-lengths", default="32,24,16", help="comma list, e.g. 32")
     recover.add_argument(

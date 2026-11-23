@@ -1,19 +1,36 @@
+"""RPF9 container framing: the 32-byte header and how the regions are laid out.
+
+A single ``.rpf`` file may hold several concatenated RPF9 archives ("bases"), each
+located by scanning for the ``RPF9`` magic. Each base is::
+
+    header (32 B)   magic + sizes + flags
+    TOC || names    (encrypted on retail builds)
+    data region     (cleartext, block-aligned raw-deflate streams)
+
+The header is eight little-endian dwords. Region offsets are derived from the two
+size fields (see :class:`Rpf9Header`); the data region always starts right after the
+names blob. This module only frames the container -- parsing the entry table lives in
+``entries.py`` and decryption in ``crypto.py``.
+"""
+
 from __future__ import annotations
 
 import struct
 from dataclasses import dataclass
 from pathlib import Path
 
-RPF9_MAGIC = 0x52504639
-HEADER_SIZE = 32
-ENTRY_SIZE = 16
-BLOCK_SIZE = 512
-DIR_MARKER = 0x7FFFFF00
-PAGE_SIZE = 4096
+RPF9_MAGIC = 0x52504639  # ASCII "RPF9", little-endian
+HEADER_SIZE = 32  # eight little-endian dwords
+ENTRY_SIZE = 16  # one TOC entry = four dwords (see entries.parse_entry)
+BLOCK_SIZE = 512  # data region is addressed in 512-byte blocks
+DIR_MARKER = 0x7FFFFF00  # dword1 sentinel marking a directory entry
+PAGE_SIZE = 4096  # on-disk alignment granularity
 
 
 @dataclass(frozen=True, slots=True)
 class Rpf9Header:
+    """One parsed RPF9 base header, with derived region offsets."""
+
     path: Path
     base_offset: int
     magic: int
@@ -41,10 +58,12 @@ class Rpf9Header:
         return self.names_offset + self.names_byte_size
 
     def is_encrypted_toc(self) -> bool:
+        # Zero, or the ASCII "OPEN", means the TOC blob is stored cleartext.
         return self.encryption not in (0, 0x4E45504F)
 
 
 def find_rpf9_bases(data: memoryview | bytes) -> list[int]:
+    """Offsets of every ``RPF9`` magic in ``data`` (a file may hold several bases)."""
     needle = struct.pack("<I", RPF9_MAGIC)
     bases: list[int] = []
     start = 0
@@ -58,6 +77,7 @@ def find_rpf9_bases(data: memoryview | bytes) -> list[int]:
 
 
 def parse_header(path: Path, base_offset: int = 0) -> Rpf9Header:
+    """Read and validate the 32-byte header at ``base_offset``. Raises if magic differs."""
     with path.open("rb") as fh:
         fh.seek(base_offset)
         raw = fh.read(HEADER_SIZE)

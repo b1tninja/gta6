@@ -1,7 +1,7 @@
 """Recover the RPF9 TOC key from the leaked game executable.
 
 Every RPF9 TOC in this build carries a 48-byte global template at offsets
-16..63 (see ``gta6.rpf9.template`` and the xor-structure note): three
+16..63 (see ``gta6.rpf9.toc_key`` and the xor-structure note): three
 *identical* 16-byte blocks, the same in every archive.  Under ECB, a repeated
 ciphertext block means a repeated plaintext block, so that region is the
 ciphertext of a constant block -- most plausibly a run of zeros.
@@ -22,7 +22,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from gta6.rpf9.template import CLEARTEXT_TEMPLATE_END
+from gta6.rpf9.toc_key import CLEARTEXT_TEMPLATE_END
 
 TEMPLATE_OFFSET = 16
 TEMPLATE_SIZE = CLEARTEXT_TEMPLATE_END - TEMPLATE_OFFSET

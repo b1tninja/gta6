@@ -66,18 +66,11 @@ class Gta6Paths:
 
 
 def load_paths() -> Gta6Paths:
+    # No defaults: the game install and the RPF-Extractor live outside the repo and
+    # differ per machine, so they must come from .env (see .env.example).
     return Gta6Paths(
-        game_root=_path_from_env(
-            "GTA6_GAME_ROOT",
-            r"M:\Downloads\GTA6.Xbox.v1.0.2.1-CYBERLEEK",
-        ),
-        artifact_root=_path_from_env("GTA6_ARTIFACT_ROOT", r"D:\data\gta6\artifacts"),
-        rpf_cli=_path_from_env(
-            "GTA6_RPF_CLI",
-            r"M:\GITHUB\Piliii\RPF-Extractor\rpf-cli.exe",
-        ),
-        rpf_extractor_dir=_path_from_env(
-            "GTA6_RPF_EXTRACTOR_DIR",
-            r"M:\GITHUB\Piliii\RPF-Extractor",
-        ),
+        game_root=_path_from_env("GTA6_GAME_ROOT"),
+        artifact_root=_path_from_env("GTA6_ARTIFACT_ROOT"),
+        rpf_cli=_path_from_env("GTA6_RPF_CLI"),
+        rpf_extractor_dir=_path_from_env("GTA6_RPF_EXTRACTOR_DIR"),
     )

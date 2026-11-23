@@ -8,7 +8,7 @@ from pathlib import Path
 from gta6.rpf9.crypto import aes256_ecb_decrypt, decrypt_toc_and_names
 from gta6.rpf9.entries import DIR_MARKER, names_plausibility
 from gta6.rpf9.format import HEADER_SIZE, RPF9_MAGIC
-from gta6.rpf9.template import CLEARTEXT_TEMPLATE_END
+from gta6.rpf9.toc_key import CLEARTEXT_TEMPLATE_END
 
 
 @dataclass(frozen=True, slots=True)
