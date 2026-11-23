@@ -1,0 +1,36 @@
+[package]
+name = "rpf9rs"
+version = "0.1.0"
+edition = "2024"
+description = "Clean-room RPF9 (GTA VI Xbox) archive reader: structural validation and extraction, with AES-NI and multithreading."
+license = "Apache-2.0"
+
+# The library mirrors the Python package under gta6/rpf9/ (format, entries, crypto,
+# archive, validate). The binary is a thin CLI over it. Release builds target the host
+# CPU so the aes crate emits AES-NI; rayon parallelises across archives/entries.
+[lib]
+name = "rpf9rs"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rpf9rs"
+path = "src/main.rs"
+
+[dependencies]
+# aes uses hardware AES-NI intrinsics on x86_64 automatically (via the cipher
+# traits); it falls back to a constant-time software path elsewhere.
+aes = "0.9.4"
+cipher = "0.5.2"
+clap = { version = "4.6.9", features = ["derive"] }
+# raw-deflate (wbits = -15) inflate for the cleartext data region.
+flate2 = { version = "1.1.11", default-features = false, features = ["rust_backend"] }
+goblin = "0.10.7"
+memmap2 = "0.9.12"
+rayon = "1.12.0"
+serde_json = "1.0.154"
+thiserror = "2.0.21"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

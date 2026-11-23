@@ -17,3 +17,6 @@ docs/notes/
 
 # One-off probe scripts hard-code addresses/paths for a specific build.
 tools/
+
+# Rust port build output (the crate source and Cargo.lock are committed).
+rpf9rs/target/
