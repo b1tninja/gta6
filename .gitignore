@@ -1,0 +1,19 @@
+.env
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+dist/
+*.egg-info/
+# Internal scratch notes (addresses/bytes for a specific build) - not committed.
+internal/
+
+# Internal research notes: they quote build-specific static addresses, Ghidra
+# FUN_/DAT_ symbols and raw key/template bytes lifted from the proprietary
+# executable, so they stay local. The public README carries the findings without
+# those constants.
+docs/notes/
+
+# One-off probe scripts hard-code addresses/paths for a specific build.
+tools/
