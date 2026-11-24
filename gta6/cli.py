@@ -8,9 +8,6 @@ from pathlib import Path
 from gta6.config import load_paths
 from gta6.extract import extract_rpf
 from gta6.rpf import iter_rpf_files, script_archives
-from gta6.rpf9.archive import Rpf9Archive
-from gta6.rpf9.format import find_rpf9_bases
-from gta6.rpf9.keys import load_aes_key, scan_exe_for_key_candidates
 from gta6.rpfkit_native import require_native
 
 
@@ -66,26 +63,6 @@ def _cmd_extract_rpf(args: argparse.Namespace) -> int:
     return 0 if manifest.get("status") == "ok" else 1
 
 
-def _cmd_rpf9_info(args: argparse.Namespace) -> int:
-    p = load_paths()
-    arch = args.archive if args.archive.is_absolute() else p.game_root / args.archive
-    data = arch.read_bytes()
-    bases = find_rpf9_bases(data)
-    infos = []
-    for base in bases:
-        arc = Rpf9Archive.open(arch, base_offset=base)
-        row = arc.info()
-        row["paths_found"] = len(arc.list_paths())
-        infos.append(row)
-    payload = {
-        "bases": bases,
-        "archives": infos,
-        "aes_key_loaded": load_aes_key() is not None,
-    }
-    print(json.dumps(payload, indent=2))
-    return 0
-
-
 def _cmd_rpf9_extract(args: argparse.Namespace) -> int:
     p = load_paths()
     arch = args.archive if args.archive.is_absolute() else p.game_root / args.archive
@@ -102,205 +79,6 @@ def _cmd_rpf9_extract(args: argparse.Namespace) -> int:
     )
     print(json.dumps(manifest, indent=2))
     return 0 if manifest.get("status") == "ok" else 1
-
-
-def _cmd_rpf9_toc_probe(args: argparse.Namespace) -> int:
-    from gta6.rpf9.toc_probe import probe_paths
-
-    p = load_paths()
-    if args.archives:
-        paths = [a if a.is_absolute() else p.game_root / a for a in args.archives]
-    else:
-        paths = sorted(
-            p.game_root.rglob("*.rpf"),
-            key=lambda x: x.stat().st_size,
-        )[:12]
-    print(json.dumps(probe_paths(paths), indent=2))
-    return 0
-
-
-def _cmd_rpf9_validate(args: argparse.Namespace) -> int:
-    """Structurally validate archives (header/regions/entry table/inflate)."""
-    from gta6.rpf9.validate import validate_paths
-
-    p = load_paths()
-    if args.archives:
-        paths = [a if a.is_absolute() else p.game_root / a for a in args.archives]
-    else:
-        paths = sorted(
-            p.game_root.rglob("*.rpf"),
-            key=lambda x: x.stat().st_size,
-        )[:12]
-    print(json.dumps(validate_paths(paths), indent=2))
-    return 0
-
-
-def _cmd_rpf9_correlate(args: argparse.Namespace) -> int:
-    from gta6.rpf9.correlate import correlate_archives
-
-    p = load_paths()
-    if args.archives:
-        paths = [a if a.is_absolute() else p.game_root / a for a in args.archives]
-    else:
-        paths = [
-            x
-            for x in sorted(p.game_root.rglob("*.rpf"), key=lambda z: z.stat().st_size)
-            if x.stat().st_size < 100_000_000
-        ]
-    print(json.dumps(correlate_archives(paths), indent=2))
-    return 0
-
-
-def _cmd_rpf9_derived_keys(args: argparse.Namespace) -> int:
-    from gta6.rpf9.derived_keys import try_derived_keys
-
-    p = load_paths()
-    arch = args.archive if args.archive.is_absolute() else p.game_root / args.archive
-    print(json.dumps(try_derived_keys(arch), indent=2))
-    return 0
-
-
-def _cmd_rpf9_recover_keys(args: argparse.Namespace) -> int:
-    """Sweep the leaked exe for a key that explains the global TOC template."""
-    from gta6.rpf9 import toc_key
-
-    p = load_paths()
-    if args.exe is None:
-        print("pass the exe path (or set GTA6_GAME_EXE)", file=sys.stderr)
-        return 1
-    exe = args.exe if args.exe.is_absolute() else p.game_root / args.exe
-    if not exe.is_file():
-        print(f"not found: {exe}", file=sys.stderr)
-        return 1
-    arch = args.archive if args.archive.is_absolute() else p.game_root / args.archive
-    if not args.template_hex:
-        print(
-            "supply the known-plaintext template with --template-hex "
-            "(48 bytes / 96 hex chars from your survey)",
-            file=sys.stderr,
-        )
-        return 1
-    try:
-        template = bytes.fromhex(args.template_hex)
-    except ValueError:
-        print("--template-hex must be hex", file=sys.stderr)
-        return 1
-    nonces: list[tuple[str, bytes]] = [("zero", bytes(16))]
-    if arch.is_file():
-        nonces = toc_key.standard_nonces(arch.read_bytes()[:32], arch)
-
-    lengths = tuple(int(x) for x in args.key_lengths.split(","))
-    workers = args.workers or max(1, min(8, exe.stat().st_size // (16 << 20)))
-    hits = toc_key.sweep_file(
-        exe,
-        template=template,
-        nonces=nonces,
-        key_lengths=lengths,
-        workers=workers,
-        stop_after=args.stop_after,
-        verbose=True,
-    )
-    payload = {
-        "exe": str(exe),
-        "archive": str(arch),
-        "template_hex": template.hex(),
-        "template_is_three_distinct_blocks": toc_key.TemplateOracle(template).distinct,
-        "nonces_tried": [name for name, _ in nonces],
-        "key_lengths": list(lengths),
-        "hits": [h.as_dict() for h in hits],
-    }
-    print(json.dumps(payload, indent=2))
-    if args.manifest:
-        args.manifest.parent.mkdir(parents=True, exist_ok=True)
-        args.manifest.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return 0 if hits else 1
-
-
-def _cmd_rpf9_recover_keyctx(args: argparse.Namespace) -> int:
-    """Recover the AES key-context blob address from the exe (no key material).
-
-    Derives the provider-registry table and the AES-256 whitened-CBC key-context blob
-    location from the executable itself, so the repo can stay public without committing
-    key material or a hard-coded exe pointer.
-    """
-    from gta6.rpf9 import sbox_key
-
-    p = load_paths()
-    exe = args.exe if args.exe.is_absolute() else p.game_root / args.exe
-    if not exe.is_file():
-        print(f"not found: {exe}", file=sys.stderr)
-        return 1
-    payload = sbox_key.recover_key_ctx_report(exe, handle=args.handle, flags=args.flags)
-    print(json.dumps(payload, indent=2))
-    if args.manifest:
-        args.manifest.parent.mkdir(parents=True, exist_ok=True)
-        args.manifest.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return 0 if payload.get("status") == "ok" else 1
-
-
-def _cmd_rpf9_hunt_keys(args: argparse.Namespace) -> int:
-    from gta6.rpf9.key_hunt import load_toc_and_names, trial_keys_on_archive
-
-    p = load_paths()
-    arch = args.archive if args.archive.is_absolute() else p.game_root / args.archive
-    tail, names = load_toc_and_names(arch)
-    hits = trial_keys_on_archive(args.binary, tail, names, limit=args.limit)
-    print(
-        json.dumps(
-            {
-                "binary": str(args.binary),
-                "archive": str(arch),
-                "tail_bytes": len(tail),
-                "names_bytes": len(names),
-                "candidates_tried": args.limit,
-                "hits": hits,
-            },
-            indent=2,
-        )
-    )
-    return 0 if hits else 1
-
-
-def _cmd_rpf9_xor_survey(args: argparse.Namespace) -> int:
-    from gta6.rpf9.xor_analysis import analyze
-
-    p = load_paths()
-    if args.archives:
-        paths = [a if a.is_absolute() else p.game_root / a for a in args.archives]
-    else:
-        paths = [
-            p
-            for p in sorted(p.game_root.rglob("*.rpf"), key=lambda x: x.stat().st_size)
-            if p.stat().st_size < 50_000_000
-        ][:32]
-    print(json.dumps(analyze(paths), indent=2))
-    return 0
-
-
-def _cmd_rpf9_trial_keys(args: argparse.Namespace) -> int:
-    import os
-
-    p = load_paths()
-    arch = args.archive if args.archive.is_absolute() else p.game_root / args.archive
-    candidates = scan_exe_for_key_candidates(args.exe, limit=args.limit)
-    best: list[dict[str, object]] = []
-    from gta6.rpf9.crypto import decrypt_toc_and_names
-    from gta6.rpf9.entries import names_plausibility
-
-    data = arch.read_bytes()
-    arc = Rpf9Archive.open(arch)
-    blob = data[arc.header.toc_offset : arc.header.data_offset]
-    for idx, key in enumerate(candidates):
-        plain = decrypt_toc_and_names(blob, key)
-        names = plain[arc.header.toc_byte_size :]
-        score = names_plausibility(names)
-        if score > 0.5:
-            best.append({"index": idx, "score": score, "key_hex": key.hex()})
-    print(json.dumps({"tried": len(candidates), "hits": best}, indent=2))
-    if best:
-        os.environ["GTA6_AES_KEY_HEX"] = str(best[0]["key_hex"])
-        print("# best key exported to GTA6_AES_KEY_HEX for this process only", file=sys.stderr)
-    return 0
 
 
 def _cmd_extract_install(args: argparse.Namespace) -> int:
@@ -335,7 +113,7 @@ def main(argv: list[str] | None = None) -> int:
     inv.add_argument("--scripts-only", action="store_true")
     inv.set_defaults(func=_cmd_inventory)
 
-    info = sub.add_parser("rpf-info", help="Run rpf-cli list (with RPF9 detection)")
+    info = sub.add_parser("rpf-info", help="List an archive via the native rpfkit reader")
     info.add_argument("archive", type=Path)
     info.add_argument("pattern", nargs="?", default=None)
     info.set_defaults(func=_cmd_rpf_info)
@@ -357,121 +135,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     bulk.set_defaults(func=_cmd_extract_install)
 
-    r9info = sub.add_parser("rpf9-info", help="Parse RPF9 header / decryption state")
-    r9info.add_argument("archive", type=Path)
-    r9info.set_defaults(func=_cmd_rpf9_info)
-
     r9ext = sub.add_parser("rpf9-extract", help="Extract via the native rpfkit reader")
     r9ext.add_argument("archive", type=Path)
     r9ext.add_argument("-o", "--output", type=Path, default=None)
     r9ext.add_argument("--no-decompress", action="store_true")
     r9ext.set_defaults(func=_cmd_rpf9_extract)
-
-    trial = sub.add_parser(
-        "rpf9-trial-keys",
-        help="Try AES key candidates from a Scarlett exe against one archive TOC",
-    )
-    trial.add_argument("exe", type=Path)
-    trial.add_argument("archive", type=Path)
-    trial.add_argument("--limit", type=int, default=50)
-    trial.set_defaults(func=_cmd_rpf9_trial_keys)
-
-    xor_survey = sub.add_parser(
-        "rpf9-xor-survey",
-        help="XOR/compare encrypted TOC regions across archives",
-    )
-    xor_survey.add_argument(
-        "archives",
-        nargs="*",
-        type=Path,
-        help="Optional paths (default: 24 smallest .rpf)",
-    )
-    xor_survey.set_defaults(func=_cmd_rpf9_xor_survey)
-
-    probe = sub.add_parser("rpf9-toc-probe", help="Parse cleartext TOC head + regions")
-    probe.add_argument("archives", nargs="*", type=Path)
-    probe.set_defaults(func=_cmd_rpf9_toc_probe)
-
-    validate = sub.add_parser(
-        "rpf9-validate",
-        help="Structurally validate archives (no build-specific bytes)",
-    )
-    validate.add_argument(
-        "archives",
-        nargs="*",
-        type=Path,
-        help="Optional paths (default: 12 smallest .rpf)",
-    )
-    validate.set_defaults(func=_cmd_rpf9_validate)
-
-    hunt = sub.add_parser(
-        "rpf9-hunt-keys",
-        help="Heuristic AES key scan from a PE against TOC tail + names",
-    )
-    hunt.add_argument("binary", type=Path)
-    hunt.add_argument("archive", type=Path)
-    hunt.add_argument("--limit", type=int, default=2000)
-    hunt.set_defaults(func=_cmd_rpf9_hunt_keys)
-
-    corr = sub.add_parser("rpf9-correlate", help="Correlate cleartext TOC head vs header fields")
-    corr.add_argument("archives", nargs="*", type=Path)
-    corr.set_defaults(func=_cmd_rpf9_correlate)
-
-    derived = sub.add_parser(
-        "rpf9-derived-keys",
-        help="Try AES keys derived from header / filename material",
-    )
-    derived.add_argument("archive", type=Path)
-    derived.set_defaults(func=_cmd_rpf9_derived_keys)
-
-    recover = sub.add_parser(
-        "rpf9-recover-keys",
-        help="Sweep the exe for the TOC key using a known-plaintext template",
-    )
-    recover.add_argument("exe", type=Path, nargs="?", default=None)
-    recover.add_argument(
-        "archive",
-        type=Path,
-        nargs="?",
-        default=Path("pack/story000/story000_script.rpf"),
-    )
-    recover.add_argument(
-        "--template-hex",
-        default=None,
-        help="known-plaintext template, 96 hex chars (48 bytes) from your survey",
-    )
-    recover.add_argument("--key-lengths", default="32,24,16", help="comma list, e.g. 32")
-    recover.add_argument(
-        "--workers",
-        type=int,
-        default=0,
-        help="0 = one per 16 MB of the exe, capped at 8",
-    )
-    recover.add_argument("--stop-after", type=int, default=0, help="0 = scan the whole exe")
-    recover.add_argument("--manifest", type=Path, default=None)
-    recover.set_defaults(func=_cmd_rpf9_recover_keys)
-
-    keyctx = sub.add_parser(
-        "rpf9-recover-keyctx",
-        help="Recover the AES key-context blob address from the exe (no key material)",
-    )
-    keyctx.add_argument(
-        "exe", type=Path, nargs="?", default=Path("game_scarlett_master.exe")
-    )
-    keyctx.add_argument(
-        "--handle",
-        type=lambda s: int(s, 0),
-        default=1,
-        help="provider key handle (default 0x1, the static archive key)",
-    )
-    keyctx.add_argument(
-        "--flags",
-        type=lambda s: int(s, 0),
-        default=2,
-        help="registry flags nibble (default 2 = block-cipher family)",
-    )
-    keyctx.add_argument("--manifest", type=Path, default=None)
-    keyctx.set_defaults(func=_cmd_rpf9_recover_keyctx)
 
     args = parser.parse_args(argv)
     return args.func(args)

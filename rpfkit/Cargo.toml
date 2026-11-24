@@ -5,8 +5,8 @@ edition = "2024"
 description = "Clean-room RPF9 (GTA VI Xbox) archive reader: structural validation and extraction, with AES-NI and multithreading. Ships a native Python extension module."
 license = "Apache-2.0"
 
-# The library mirrors the Python package under gta6/rpf9/ (format, entries, crypto,
-# archive, validate). The binary is a thin CLI over it. Release builds target the host
+# The library is the clean-room RPF9 reader (format, entries, crypto, archive,
+# validate). The binary is a thin CLI over it. Release builds target the host
 # CPU so the aes crate emits AES-NI; rayon parallelises across archives/entries.
 #
 # `cdylib` produces the Python extension module (the `python` feature, built by

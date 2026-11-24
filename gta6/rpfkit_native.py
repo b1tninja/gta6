@@ -5,10 +5,8 @@ separately with maturin (see ``rpfkit/pyproject.toml``) and imported as ``rpfkit
 module centralises the import so the rest of the package has one place to go through the
 native core, and degrades with a clear message when the extension is not installed.
 
-The native module is intentionally *not* a hard dependency of the pure-Python package:
-the key-research tooling (``gta6.rpf9.*``) runs without it. Only the extract/validate
-commands that want the fast path require it, and they surface this module's
-:func:`require_native` error when it is missing.
+The native module is required for the info/extract commands. They surface this
+module's :func:`require_native` error when it is missing.
 """
 
 from __future__ import annotations

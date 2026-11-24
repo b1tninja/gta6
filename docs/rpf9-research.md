@@ -69,7 +69,8 @@ blob offset
 
 Whether an archive is well-formed is checked by *structure*, not by matching any
 particular bytes, so the checks stay valid across builds and the eventual production
-release. `gta6/rpf9/validate.py` (CLI: `python -m gta6 rpf9-validate`) verifies:
+release. The native reader (`rpfkit validate <archive>`, or
+`cargo run -p rpfkit --release -- validate <archive>`) verifies:
 
 - the header is self-consistent (magic, non-zero TOC size, entry count divides the
   TOC size);
@@ -107,7 +108,7 @@ image, laid out as:
 
 Because the whitening is folded into the tables, a plain `AES-256-CBC` from a
 standard crypto library will **not** match unless the whitening is reproduced. The
-`WhitenedAesCbc` class in `gta6/rpf9/crypto.py` implements the whitened transform.
+whitened transform is implemented in the native reader (`rpfkit/src/crypto.rs`).
 
 ### Recovering the key statically
 
@@ -116,8 +117,8 @@ tooling recovers it from the executable:
 
 1. Scan the code section for the provider **descriptor getter** (a tiny function
    that returns a pointer to a registry table and stores its entry count). The
-   getter's byte pattern is *assembled from mnemonics* via keystone, not copied as a
-   literal, so it is not tied to one build's encoding.
+   getter's byte pattern is *assembled from mnemonics*, not copied as a literal, so
+   it is not tied to one build's encoding.
 2. Validate the pointed-to table **structurally** as a crypto provider registry
    (packed key-handle keys, block-cipher-family flags, and a high-entropy key-context
    blob operand).
@@ -125,12 +126,15 @@ tooling recovers it from the executable:
    against a fixed constant.
 
 ```powershell
-python -m gta6 rpf9-recover-keyctx     # derive the key-context blob address
-python -m gta6 rpf9-recover-keys --template-hex <96 hex chars>   # sweep for the TOC key
+rpfkit recover-keyctx game_scarlett_master.exe   # derive the key-context blob address
+# or: cargo run -p rpfkit --release -- recover-keyctx game_scarlett_master.exe
 ```
 
-The known-plaintext region (supplied via `--template-hex`) is used as an oracle:
-candidate keys are accepted only if they reproduce it under the whitened-CBC model.
+This recovery runs automatically when the reader lists or extracts an archive (the exe
+is read from `GTA6_GAME_EXE`). The earlier known-plaintext key sweep (which used a
+build-specific template supplied via `--template-hex` as an oracle, accepting candidate
+keys only if they reproduced it under the whitened-CBC model) was part of the Python
+research layer that has since been dropped; it is preserved in the git history.
 
 ## 5. Open questions
 
@@ -145,6 +149,6 @@ candidate keys are accepted only if they reproduce it under the whitened-CBC mod
 
 ## 6. Method note (clean room)
 
-Everything in `gta6/rpf9/` is implemented from observed byte patterns and format
-analysis of the archives plus static analysis of the executable — not from any
+Everything in the `rpfkit/` reader is implemented from observed byte patterns and
+format analysis of the archives plus static analysis of the executable — not from any
 existing extractor. The bundled `rpf-cli` is RPF7-only and is not used for RPF9.

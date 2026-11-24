@@ -10,7 +10,7 @@ Run from `D:\code\gta6` only (do not lint the parent `D:\code` tree).
 python -m pip install -e ".[dev]"
 python -m gta6 paths
 python -m gta6 inventory --scripts-only
-python -m gta6 rpf9-info pack\\story000\\story000_script.rpf
+python -m gta6 rpf-info pack\\story000\\story000_script.rpf
 python -m gta6 rpf9-extract pack\\story000\\story000_script.rpf
 python -m pytest -q
 python -m ruff check .
