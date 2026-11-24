@@ -109,7 +109,7 @@ pub fn read_name(names: &[u8], offset: usize) -> String {
         .map(|p| offset + p)
         .unwrap_or(names.len());
     let chunk = &names[offset..end];
-    if chunk.is_empty() || chunk.iter().any(|&b| b < 0x20 || b > 0x7E) {
+    if chunk.is_empty() || !chunk.iter().all(|&b| (0x20..=0x7E).contains(&b)) {
         return String::new();
     }
     String::from_utf8_lossy(chunk).into_owned()
@@ -126,7 +126,6 @@ pub fn names_plausibility(names: &[u8]) -> f64 {
         .count();
     useful as f64 / names.len() as f64
 }
-
 
 #[cfg(test)]
 mod tests {

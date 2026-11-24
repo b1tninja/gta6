@@ -50,7 +50,11 @@ impl ValidationReport {
 
 fn check_header(report: &mut ValidationReport, arc: &Archive) {
     let h = &arc.header;
-    report.add("magic", h.magic == crate::format::RPF9_MAGIC, format!("{:#x}", h.magic));
+    report.add(
+        "magic",
+        h.magic == crate::format::RPF9_MAGIC,
+        format!("{:#x}", h.magic),
+    );
     report.add(
         "toc_size_nonzero",
         h.toc_byte_size > 0,
@@ -58,8 +62,12 @@ fn check_header(report: &mut ValidationReport, arc: &Archive) {
     );
     report.add(
         "entry_count_consistent",
-        (h.toc_byte_size as usize) % ENTRY_SIZE == 0,
-        format!("toc_byte_size={} entry_count={}", h.toc_byte_size, h.entry_count()),
+        (h.toc_byte_size as usize).is_multiple_of(ENTRY_SIZE),
+        format!(
+            "toc_byte_size={} entry_count={}",
+            h.toc_byte_size,
+            h.entry_count()
+        ),
     );
 }
 
@@ -70,7 +78,11 @@ fn max_data_end(arc: &Archive) -> usize {
         if e.kind == EntryKind::Directory {
             continue;
         }
-        let size = if e.file_size > 0 { e.file_size } else { e.file_uncompressed_size } as usize;
+        let size = if e.file_size > 0 {
+            e.file_size
+        } else {
+            e.file_uncompressed_size
+        } as usize;
         let start = arc.header.base_offset as usize + (e.file_offset_blocks as usize) * BLOCK_SIZE;
         end = end.max(start + size);
     }
@@ -99,15 +111,23 @@ fn check_regions(report: &mut ValidationReport, arc: &Archive, file_size: usize)
             format!("max_data_end={max_end} file_size={file_size}"),
         );
     } else {
-        report.skipped.push("data_region_fits (TOC not readable)".to_string());
+        report
+            .skipped
+            .push("data_region_fits (TOC not readable)".to_string());
     }
 }
 
 fn check_entries(report: &mut ValidationReport, arc: &Archive) {
     if !arc.toc_readable() {
-        report.skipped.push("entry_table (TOC not readable)".to_string());
-        report.skipped.push("names_in_range (TOC not readable)".to_string());
-        report.skipped.push("directory_tree (TOC not readable)".to_string());
+        report
+            .skipped
+            .push("entry_table (TOC not readable)".to_string());
+        report
+            .skipped
+            .push("names_in_range (TOC not readable)".to_string());
+        report
+            .skipped
+            .push("directory_tree (TOC not readable)".to_string());
         return;
     }
 
@@ -153,14 +173,19 @@ fn check_entries(report: &mut ValidationReport, arc: &Archive) {
     report.add(
         "toc_holds_entries",
         toc_len >= arc.header.entry_count() * ENTRY_SIZE,
-        format!("toc_len={toc_len} need={}", arc.header.entry_count() * ENTRY_SIZE),
+        format!(
+            "toc_len={toc_len} need={}",
+            arc.header.entry_count() * ENTRY_SIZE
+        ),
     );
 }
 
 /// Try to inflate a few file payloads; the data region is cleartext deflate.
 fn check_data_inflates(report: &mut ValidationReport, arc: &Archive, sample: usize) {
     if !arc.toc_readable() {
-        report.skipped.push("data_inflates (TOC not readable)".to_string());
+        report
+            .skipped
+            .push("data_inflates (TOC not readable)".to_string());
         return;
     }
     let mut tried = 0;
@@ -182,7 +207,9 @@ fn check_data_inflates(report: &mut ValidationReport, arc: &Archive, sample: usi
         }
     }
     if tried == 0 {
-        report.skipped.push("data_inflates (no compressed entries sampled)".to_string());
+        report
+            .skipped
+            .push("data_inflates (no compressed entries sampled)".to_string());
         return;
     }
     report.add(

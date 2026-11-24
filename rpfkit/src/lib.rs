@@ -23,6 +23,9 @@ pub mod keys;
 pub mod recovery;
 pub mod validate;
 
+#[cfg(feature = "python")]
+mod python;
+
 pub use archive::{Archive, Decryption};
 pub use format::{Header, Rpf9Error};
 pub use recovery::{PeView, RecoveredKeyCtx, recover_key_ctx_blob, recover_key_ctx_report};

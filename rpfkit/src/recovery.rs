@@ -248,16 +248,27 @@ pub fn is_crypto_registry(entries: &[RegistryEntry], view: &PeView) -> bool {
     if entries.len() < MIN_ENTRIES {
         return false;
     }
-    if !entries.iter().all(|e| VALID_REGISTRY_FLAGS.contains(&e.flags())) {
+    if !entries
+        .iter()
+        .all(|e| VALID_REGISTRY_FLAGS.contains(&e.flags()))
+    {
         return false;
     }
-    if !entries.iter().all(|e| e.length == 0 || e.length <= MAX_BLOB_LEN) {
+    if !entries
+        .iter()
+        .all(|e| e.length == 0 || e.length <= MAX_BLOB_LEN)
+    {
         return false;
     }
-    if !entries.iter().any(|e| is_high_entropy(view, e.val0, e.length)) {
+    if !entries
+        .iter()
+        .any(|e| is_high_entropy(view, e.val0, e.length))
+    {
         return false;
     }
-    entries.iter().all(|e| e.val0 == 0 || view.va_to_file(e.val0).is_some())
+    entries
+        .iter()
+        .all(|e| e.val0 == 0 || view.va_to_file(e.val0).is_some())
 }
 
 /// Scan `.rdata` for registry tables matching the structural signature.
@@ -388,7 +399,10 @@ pub fn recover_key_ctx_report(
             })
         })
         .collect();
-    report.insert("registry_tables".into(), serde_json::Value::Array(table_json));
+    report.insert(
+        "registry_tables".into(),
+        serde_json::Value::Array(table_json),
+    );
     match recover_key_ctx_blob(&view, handle, flags) {
         Some(r) => {
             report.insert(

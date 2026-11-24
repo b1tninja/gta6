@@ -1,4 +1,4 @@
-//! Thin CLI over the rpf9rs library: info / list / extract / validate.
+//! Thin CLI over the rpfkit library: info / list / extract / validate.
 //!
 //! Mirrors the Python `gta6` CLI subcommands. Validation runs across all given paths in
 //! parallel (rayon); extraction inflates and writes entries in parallel.
@@ -6,12 +6,15 @@
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use rpf9rs::Archive;
-use rpf9rs::keys::load_aes_key;
-use rpf9rs::validate::validate_paths;
+use rpfkit::Archive;
+use rpfkit::keys::load_aes_key;
+use rpfkit::validate::validate_paths;
 
 #[derive(Parser)]
-#[command(name = "rpf9rs", about = "RPF9 archive reader (AES-NI + multithreaded)")]
+#[command(
+    name = "rpfkit",
+    about = "RPF9 archive reader (AES-NI + multithreaded)"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -85,7 +88,10 @@ fn run(cmd: Cmd, key: Option<&[u8]>) -> i32 {
                 println!("names_byte_size {}", h.names_byte_size);
                 println!("entry_count     {}", h.entry_count());
                 println!("encryption      {:#x}", h.encryption);
-                println!("archive_id      {:#x} {:#x}", h.archive_id.0, h.archive_id.1);
+                println!(
+                    "archive_id      {:#x} {:#x}",
+                    h.archive_id.0, h.archive_id.1
+                );
                 println!("decryption      {}", arc.decryption.as_str());
                 println!("toc_readable    {}", arc.toc_readable());
                 println!("data_offset     {}", h.data_offset());
@@ -105,7 +111,7 @@ fn run(cmd: Cmd, key: Option<&[u8]>) -> i32 {
                     );
                     return 1;
                 }
-                for p in list_paths(&arc) {
+                for (_idx, p) in arc.file_paths() {
                     println!("{p}");
                 }
                 0
@@ -156,18 +162,14 @@ fn run(cmd: Cmd, key: Option<&[u8]>) -> i32 {
                 "validated {} archives: {} ok, {} failed",
                 summary.count, summary.ok, summary.failed
             );
-            if summary.failed > 0 {
-                1
-            } else {
-                0
-            }
+            if summary.failed > 0 { 1 } else { 0 }
         }
         Cmd::RecoverKeyctx {
             exe,
             handle,
             flags,
             manifest,
-        } => match rpf9rs::recovery::recover_key_ctx_report(&exe, handle, flags) {
+        } => match rpfkit::recovery::recover_key_ctx_report(&exe, handle, flags) {
             Ok(payload) => {
                 println!("{}", serde_json::to_string_pretty(&payload).unwrap());
                 if let Some(m) = manifest {
@@ -188,41 +190,4 @@ fn run(cmd: Cmd, key: Option<&[u8]>) -> i32 {
             }
         },
     }
-}
-
-/// Walk the directory tree and return file paths (mirrors Python `list_paths`).
-fn list_paths(arc: &Archive) -> Vec<String> {
-    let mut out = Vec::new();
-    walk(arc, 0, "", &mut out);
-    out
-}
-
-fn walk(arc: &Archive, idx: usize, prefix: &str, out: &mut Vec<String>) {
-    let Some(entry) = arc.entries.get(idx) else { return };
-    let names = arc.names_plain.as_deref().unwrap_or(&[]);
-    if entry.kind == rpf9rs::entries::EntryKind::Directory {
-        let name = rpf9rs::entries::read_name(names, entry.name_offset as usize);
-        let sub = if name.is_empty() {
-            prefix.to_string()
-        } else if prefix.is_empty() {
-            name
-        } else {
-            format!("{prefix}/{name}")
-        };
-        let first = entry.entries_index as usize;
-        let count = entry.entries_count as usize;
-        for child in first..first + count {
-            walk(arc, child, &sub, out);
-        }
-        return;
-    }
-    let name = rpf9rs::entries::read_name(names, entry.name_offset as usize);
-    let rel = if name.is_empty() {
-        format!("entry_{idx:04}")
-    } else if prefix.is_empty() {
-        name
-    } else {
-        format!("{prefix}/{name}")
-    };
-    out.push(rel);
 }

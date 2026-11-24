@@ -19,4 +19,4 @@ docs/notes/
 tools/
 
 # Rust port build output (the crate source and Cargo.lock are committed).
-rpf9rs/target/
+rpfkit/target/

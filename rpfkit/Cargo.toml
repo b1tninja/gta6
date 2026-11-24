@@ -1,19 +1,24 @@
 [package]
-name = "rpf9rs"
+name = "rpfkit"
 version = "0.1.0"
 edition = "2024"
-description = "Clean-room RPF9 (GTA VI Xbox) archive reader: structural validation and extraction, with AES-NI and multithreading."
+description = "Clean-room RPF9 (GTA VI Xbox) archive reader: structural validation and extraction, with AES-NI and multithreading. Ships a native Python extension module."
 license = "Apache-2.0"
 
 # The library mirrors the Python package under gta6/rpf9/ (format, entries, crypto,
 # archive, validate). The binary is a thin CLI over it. Release builds target the host
 # CPU so the aes crate emits AES-NI; rayon parallelises across archives/entries.
+#
+# `cdylib` produces the Python extension module (the `python` feature, built by
+# maturin); `rlib` keeps `cargo test` and the `[[bin]]` working. The cdylib is inert
+# without the `python` feature, so a plain `cargo build` does not pull in pyo3.
 [lib]
-name = "rpf9rs"
+name = "rpfkit"
 path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
 
 [[bin]]
-name = "rpf9rs"
+name = "rpfkit"
 path = "src/main.rs"
 
 [dependencies]
@@ -29,6 +34,12 @@ memmap2 = "0.9.12"
 rayon = "1.12.0"
 serde_json = "1.0.154"
 thiserror = "2.0.21"
+# Optional native Python bindings. Enable with `--features python` (maturin does this
+# via [tool.maturin] dependencies). abi3 builds one wheel for CPython 3.9+.
+pyo3 = { version = "0.30.1", features = ["abi3-py39"], optional = true }
+
+[features]
+python = ["dep:pyo3"]
 
 [profile.release]
 opt-level = 3
