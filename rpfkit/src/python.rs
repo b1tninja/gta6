@@ -15,8 +15,9 @@ use pyo3::exceptions::PyOSError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyDictMethods, PyList, PyListMethods};
 
+use crate::KeySource;
 use crate::archive::Archive;
-use crate::recovery::recover_key_ctx_report;
+use crate::recovery::{PeView, recover_key_ctx_blob, recover_key_ctx_report};
 use crate::validate;
 
 // Python exception raised for every Rust-side failure (I/O, format, recovery).
@@ -33,11 +34,45 @@ fn resolve_key(key: Option<Vec<u8>>) -> Option<Vec<u8>> {
     key.or_else(crate::keys::load_aes_key)
 }
 
+/// Build the key material from an explicit raw `key`, an explicit `key_ctx` blob, and/or
+/// a `key_ctx_exe` to recover the blob from. The raw key falls back to the environment.
+/// The whitened-CBC cipher (from `key_ctx`) is tried first by the reader; the raw key
+/// drives the ECB fallback.
+fn resolve_key_source(
+    key: Option<Vec<u8>>,
+    key_ctx: Option<Vec<u8>>,
+    key_ctx_exe: Option<PathBuf>,
+) -> PyResult<KeySource> {
+    let key = resolve_key(key);
+    let ctx = match (key_ctx, key_ctx_exe) {
+        (Some(c), _) => Some(c),
+        (None, Some(exe)) => {
+            let view = PeView::open(&exe).map_err(pyerr)?;
+            let r = recover_key_ctx_blob(&view, Some(1), Some(2))
+                .ok_or_else(|| Rpf9Error::new_err("no key-context blob recovered from exe"))?;
+            view.read_key_ctx_blob(&r)
+        }
+        (None, None) => None,
+    };
+    Ok(match (key, ctx) {
+        (Some(k), Some(c)) => KeySource::both(&k, &c),
+        (Some(k), None) => KeySource::from_key(&k),
+        (None, Some(c)) => KeySource::from_key_ctx(&c),
+        (None, None) => KeySource::default(),
+    })
+}
+
 /// An opened RPF9 archive.
 ///
-/// Open with `rpfkit.Archive(path)` (optionally `base_offset=` and `key=`). When no
-/// `key` is given, the reader falls back to the `GTA6_AES_KEY_HEX` / `GTA6_AES_KEY_FILE`
-/// environment variables, matching the CLI.
+/// Open with `rpfkit.Archive(path)`. Optional keyword arguments:
+///
+/// * `base_offset` — pin a specific base when a file holds several archives.
+/// * `key` — a raw 32-byte AES key (ECB hypothesis); falls back to the
+///   `GTA6_AES_KEY_HEX` / `GTA6_AES_KEY_FILE` environment when omitted.
+/// * `key_ctx` — the key-context blob (whitened AES-256-CBC, the retail cipher).
+/// * `key_ctx_exe` — path to the game exe; the blob is recovered from it and used as
+///   `key_ctx`. When both a key and a key-context are present the whitened cipher is
+///   tried first and the raw key is the fallback.
 #[pyclass(name = "Archive")]
 pub struct PyArchive {
     inner: Archive,
@@ -46,10 +81,16 @@ pub struct PyArchive {
 #[pymethods]
 impl PyArchive {
     #[new]
-    #[pyo3(signature = (path, *, base_offset=None, key=None))]
-    fn new(path: PathBuf, base_offset: Option<usize>, key: Option<Vec<u8>>) -> PyResult<Self> {
-        let key = resolve_key(key);
-        let inner = Archive::open(&path, base_offset, key.as_deref()).map_err(pyerr)?;
+    #[pyo3(signature = (path, *, base_offset=None, key=None, key_ctx=None, key_ctx_exe=None))]
+    fn new(
+        path: PathBuf,
+        base_offset: Option<usize>,
+        key: Option<Vec<u8>>,
+        key_ctx: Option<Vec<u8>>,
+        key_ctx_exe: Option<PathBuf>,
+    ) -> PyResult<Self> {
+        let key = resolve_key_source(key, key_ctx, key_ctx_exe)?;
+        let inner = Archive::open(&path, base_offset, &key).map_err(pyerr)?;
         Ok(Self { inner })
     }
 
@@ -83,7 +124,8 @@ impl PyArchive {
         self.inner.toc_readable()
     }
 
-    /// How the TOC was decrypted: "plaintext", "encrypted_no_key", "aes256_ecb", ...
+    /// How the TOC was decrypted: "plaintext", "encrypted_no_key", "whitened_aes_cbc",
+    /// "aes256_ecb", "wrong_key", ...
     #[getter]
     fn decryption(&self) -> &'static str {
         self.inner.decryption.as_str()
@@ -131,15 +173,17 @@ impl PyArchive {
 
 /// Structurally validate one archive; returns a dict report.
 #[pyfunction]
-#[pyo3(signature = (path, *, base_offset=None, key=None))]
+#[pyo3(signature = (path, *, base_offset=None, key=None, key_ctx=None, key_ctx_exe=None))]
 fn validate_archive<'py>(
     py: Python<'py>,
     path: PathBuf,
     base_offset: Option<usize>,
     key: Option<Vec<u8>>,
+    key_ctx: Option<Vec<u8>>,
+    key_ctx_exe: Option<PathBuf>,
 ) -> PyResult<Bound<'py, PyDict>> {
-    let key = resolve_key(key);
-    let report = validate::validate_archive(&path, base_offset, key.as_deref()).map_err(pyerr)?;
+    let key = resolve_key_source(key, key_ctx, key_ctx_exe)?;
+    let report = validate::validate_archive(&path, base_offset, &key).map_err(pyerr)?;
     let d = PyDict::new(py);
     d.set_item("path", report.path.clone())?;
     d.set_item("base_offset", report.base_offset)?;
@@ -159,34 +203,36 @@ fn validate_archive<'py>(
 
 /// Validate many archives in parallel; returns a summary dict.
 #[pyfunction]
-#[pyo3(signature = (paths, *, key=None))]
+#[pyo3(signature = (paths, *, key=None, key_ctx=None, key_ctx_exe=None))]
 fn validate_paths<'py>(
     py: Python<'py>,
     paths: Vec<PathBuf>,
     key: Option<Vec<u8>>,
-) -> Bound<'py, PyDict> {
-    let key = resolve_key(key);
-    let summary = validate::validate_paths(&paths, key.as_deref());
+    key_ctx: Option<Vec<u8>>,
+    key_ctx_exe: Option<PathBuf>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let key = resolve_key_source(key, key_ctx, key_ctx_exe)?;
+    let summary = validate::validate_paths(&paths, &key);
     let d = PyDict::new(py);
-    d.set_item("count", summary.count).unwrap();
-    d.set_item("ok", summary.ok).unwrap();
-    d.set_item("failed", summary.failed).unwrap();
-    d.set_item("page_size", summary.page_size).unwrap();
+    d.set_item("count", summary.count)?;
+    d.set_item("ok", summary.ok)?;
+    d.set_item("failed", summary.failed)?;
+    d.set_item("page_size", summary.page_size)?;
     let rows = PyList::empty(py);
     for r in &summary.rows {
         let row = PyDict::new(py);
-        row.set_item("path", r.path.clone()).unwrap();
-        row.set_item("base_offset", r.base_offset).unwrap();
-        row.set_item("ok", r.ok()).unwrap();
-        rows.append(row).unwrap();
+        row.set_item("path", r.path.clone())?;
+        row.set_item("base_offset", r.base_offset)?;
+        row.set_item("ok", r.ok())?;
+        rows.append(row)?;
     }
-    d.set_item("rows", rows).unwrap();
+    d.set_item("rows", rows)?;
     let errors = PyList::empty(py);
     for (p, e) in &summary.errors {
-        errors.append((p.clone(), e.clone())).unwrap();
+        errors.append((p.clone(), e.clone()))?;
     }
-    d.set_item("errors", errors).unwrap();
-    d
+    d.set_item("errors", errors)?;
+    Ok(d)
 }
 
 /// Recover the AES key-context blob address from the exe (no key material).

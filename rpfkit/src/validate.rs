@@ -13,7 +13,7 @@
 
 use std::path::Path;
 
-use crate::archive::Archive;
+use crate::archive::{Archive, KeySource};
 use crate::entries::EntryKind;
 use crate::format::{BLOCK_SIZE, ENTRY_SIZE, PAGE_SIZE, Rpf9Error};
 
@@ -223,9 +223,10 @@ fn check_data_inflates(report: &mut ValidationReport, arc: &Archive, sample: usi
 pub fn validate_archive(
     path: &Path,
     base_offset: Option<usize>,
-    key: Option<&[u8]>,
+    key: impl Into<KeySource>,
 ) -> Result<ValidationReport, Rpf9Error> {
-    let arc = Archive::open(path, base_offset, key)?;
+    let key = key.into();
+    let arc = Archive::open(path, base_offset, &key)?;
     let base = arc.header.base_offset;
     let mut report = ValidationReport {
         path: arc.path.display().to_string(),
@@ -254,12 +255,13 @@ pub struct ValidateSummary {
 /// Validate several archives; a file with no RPF9 header is reported, not fatal.
 ///
 /// Archives are validated in parallel with rayon — the point of the Rust port.
-pub fn validate_paths(paths: &[std::path::PathBuf], key: Option<&[u8]>) -> ValidateSummary {
+pub fn validate_paths(paths: &[std::path::PathBuf], key: impl Into<KeySource>) -> ValidateSummary {
     use rayon::prelude::*;
+    let key = key.into();
     let existing: Vec<_> = paths.iter().filter(|p| p.is_file()).cloned().collect();
     let results: Vec<Result<ValidationReport, Rpf9Error>> = existing
         .par_iter()
-        .map(|p| validate_archive(p, None, key))
+        .map(|p| validate_archive(p, None, &key))
         .collect();
 
     let mut rows = Vec::new();

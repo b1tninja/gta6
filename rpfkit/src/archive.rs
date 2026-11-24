@@ -4,9 +4,18 @@
 //! the TOC/names readable. The decryption state ([`Archive::decryption`]) is one of:
 //!
 //! * `plaintext`        - header says the TOC is cleartext (encryption 0 / "OPEN");
-//! * `encrypted_no_key` - TOC is encrypted and no AES key is configured;
-//! * `aes256_ecb`       - decrypted and the names blob looks like ASCII (key accepted);
+//! * `encrypted_no_key` - TOC is encrypted and no key material is configured;
+//! * `whitened_aes_cbc` - decrypted with the whitened AES-256-CBC cipher from a
+//!   `key_ctx` blob and the names blob looks like ASCII (accepted);
+//! * `aes256_ecb`       - decrypted with a raw key under the ECB hypothesis and the
+//!   names blob looks like ASCII (key accepted);
 //! * `wrong_key`        - decrypted but the names blob is not plausible ASCII.
+//!
+//! The whitened cipher is the model identified in the retail executable (§4 of
+//! `docs/rpf9-research.md`); the ECB path is retained as the falsifiable RPF7-style
+//! hypothesis. When a [`KeySource::KeyCtx`] blob is supplied it is tried first; if its
+//! output is not plausible ASCII the reader falls back to the ECB path (when a raw key
+//! is also present) so neither model is silently dropped.
 //!
 //! The file is accessed through a read-only memory map ([`memmap2::Mmap`]) rather than
 //! being read into a buffer. Retail archives can be tens of gigabytes, so this keeps
@@ -23,7 +32,9 @@ use std::sync::Arc;
 use flate2::bufread::DeflateDecoder;
 use memmap2::Mmap;
 
-use crate::crypto::{DEFAULT_NAME_PLAUSIBILITY, decrypt_toc_and_names};
+use crate::crypto::{
+    DEFAULT_NAME_PLAUSIBILITY, KEY_CTX_SIZE, WhitenedAesCbc, decrypt_toc_and_names,
+};
 use crate::entries::{Entry, EntryKind, names_plausibility, parse_entries, read_name};
 use crate::format::{BLOCK_SIZE, Header, Rpf9Error, find_rpf9_bases, parse_header};
 
@@ -32,6 +43,7 @@ use crate::format::{BLOCK_SIZE, Header, Rpf9Error, find_rpf9_bases, parse_header
 pub enum Decryption {
     Plaintext,
     EncryptedNoKey,
+    WhitenedAesCbc,
     Aes256Ecb,
     WrongKey,
     Unknown,
@@ -42,10 +54,85 @@ impl Decryption {
         match self {
             Decryption::Plaintext => "plaintext",
             Decryption::EncryptedNoKey => "encrypted_no_key",
+            Decryption::WhitenedAesCbc => "whitened_aes_cbc",
             Decryption::Aes256Ecb => "aes256_ecb",
             Decryption::WrongKey => "wrong_key",
             Decryption::Unknown => "unknown",
         }
+    }
+}
+
+/// Key material used to make an encrypted TOC readable.
+///
+/// The two variants map to the two cipher models in [`crate::crypto`]:
+///
+/// * [`KeySource::KeyCtx`] — the precomputed key-context blob recovered from the
+///   executable; drives the whitened AES-256-CBC cipher (the retail model). This is the
+///   path that actually decrypts real archives.
+/// * [`KeySource::Key`] — a raw 32-byte AES key; drives the ECB hypothesis.
+///
+/// [`KeySource::Both`] carries both so the reader can try the whitened cipher first and
+/// fall back to ECB. Build one with [`KeySource::from_key`],
+/// [`KeySource::from_key_ctx`] or [`KeySource::both`], or pass `None` for no key.
+#[derive(Debug, Clone, Default)]
+pub struct KeySource {
+    key: Option<Vec<u8>>,
+    key_ctx: Option<Vec<u8>>,
+}
+
+impl KeySource {
+    /// A raw 32-byte AES key (ECB hypothesis).
+    pub fn from_key(key: &[u8]) -> Self {
+        Self {
+            key: Some(key.to_vec()),
+            key_ctx: None,
+        }
+    }
+
+    /// A key-context blob (whitened AES-256-CBC). Padded to [`KEY_CTX_SIZE`] if short,
+    /// since the recovered blob length (`0x10f4`) is below the size the reader needs to
+    /// read the trailing IV slot.
+    pub fn from_key_ctx(key_ctx: &[u8]) -> Self {
+        let mut blob = key_ctx.to_vec();
+        if blob.len() < KEY_CTX_SIZE {
+            blob.resize(KEY_CTX_SIZE, 0);
+        }
+        Self {
+            key: None,
+            key_ctx: Some(blob),
+        }
+    }
+
+    /// Both a raw key and a key-context blob; the whitened cipher is tried first.
+    pub fn both(key: &[u8], key_ctx: &[u8]) -> Self {
+        let mut ctx = key_ctx.to_vec();
+        if ctx.len() < KEY_CTX_SIZE {
+            ctx.resize(KEY_CTX_SIZE, 0);
+        }
+        Self {
+            key: Some(key.to_vec()),
+            key_ctx: Some(ctx),
+        }
+    }
+
+    /// `true` when there is no key material at all.
+    pub fn is_empty(&self) -> bool {
+        self.key.is_none() && self.key_ctx.is_none()
+    }
+}
+
+impl From<Option<&[u8]>> for KeySource {
+    fn from(key: Option<&[u8]>) -> Self {
+        match key {
+            Some(k) => Self::from_key(k),
+            None => Self::default(),
+        }
+    }
+}
+
+impl From<&KeySource> for KeySource {
+    fn from(key: &KeySource) -> Self {
+        key.clone()
     }
 }
 
@@ -70,13 +157,14 @@ pub struct Archive {
 impl Archive {
     /// Open the first base (or `base_offset`) and attempt to read its tables.
     ///
-    /// `key` is the optional 32-byte AES key; when `None` and the TOC is encrypted, the
-    /// archive is left in [`Decryption::EncryptedNoKey`]. The file is memory-mapped, so
-    /// opening a multi-gigabyte archive is cheap.
+    /// `key` is the optional key material; when empty and the TOC is encrypted, the
+    /// archive is left in [`Decryption::EncryptedNoKey`]. Pass a [`KeySource::KeyCtx`]
+    /// (or [`KeySource::both`]) to use the whitened AES-256-CBC cipher. The file is
+    /// memory-mapped, so opening a multi-gigabyte archive is cheap.
     pub fn open(
         path: &Path,
         base_offset: Option<usize>,
-        key: Option<&[u8]>,
+        key: impl Into<KeySource>,
     ) -> Result<Self, Rpf9Error> {
         let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         let file = File::open(&path)?;
@@ -98,6 +186,7 @@ impl Archive {
             }
         };
         let header = parse_header(&map, base, &path.display().to_string())?;
+        let key = key.into();
         let mut arc = Archive {
             path,
             header,
@@ -108,12 +197,12 @@ impl Archive {
             file_size,
             map: Arc::new(map),
         };
-        arc.load_tables(key);
+        arc.load_tables(&key);
         Ok(arc)
     }
 
     /// Read the TOC||names blob (small) and set the decryption state; parse entries if readable.
-    fn load_tables(&mut self, key: Option<&[u8]>) {
+    fn load_tables(&mut self, key: &KeySource) {
         let start = self.header.toc_offset() as usize;
         let end = (self.header.data_offset() as usize).min(self.map.len());
         let blob = &self.map[start..end];
@@ -123,27 +212,40 @@ impl Archive {
             self.toc_plain = Some(blob[..toc_len].to_vec());
             self.names_plain = Some(blob[toc_len..].to_vec());
             self.decryption = Decryption::Plaintext;
+        } else if key.is_empty() {
+            self.toc_plain = Some(blob[..toc_len].to_vec());
+            self.names_plain = Some(blob[toc_len..].to_vec());
+            self.decryption = Decryption::EncryptedNoKey;
         } else {
-            match key {
-                None => {
-                    self.toc_plain = Some(blob[..toc_len].to_vec());
-                    self.names_plain = Some(blob[toc_len..].to_vec());
-                    self.decryption = Decryption::EncryptedNoKey;
-                    return;
-                }
-                Some(k) => {
-                    let plain = decrypt_toc_and_names(blob, k);
-                    let toc = &plain[..toc_len.min(plain.len())];
-                    let names = &plain[toc_len.min(plain.len())..];
-                    self.decryption = if names_plausibility(names) >= DEFAULT_NAME_PLAUSIBILITY {
-                        Decryption::Aes256Ecb
-                    } else {
-                        Decryption::WrongKey
-                    };
-                    self.toc_plain = Some(toc.to_vec());
-                    self.names_plain = Some(names.to_vec());
-                }
+            // Try the whitened AES-256-CBC cipher first (the retail model), then fall
+            // back to the ECB hypothesis if a raw key is also present. Each candidate is
+            // accepted only if the decrypted names blob looks like ASCII.
+            let mut candidates: Vec<(Decryption, Vec<u8>)> = Vec::new();
+            if let Some(ctx) = &key.key_ctx {
+                let cipher = WhitenedAesCbc::from_key_ctx(ctx, None);
+                candidates.push((Decryption::WhitenedAesCbc, cipher.decrypt(blob, None)));
             }
+            if let Some(k) = &key.key {
+                candidates.push((Decryption::Aes256Ecb, decrypt_toc_and_names(blob, k)));
+            }
+            let cut = toc_len.min(blob.len());
+            let chosen = candidates.iter().find(|(_, plain)| {
+                names_plausibility(&plain[cut.min(plain.len())..]) >= DEFAULT_NAME_PLAUSIBILITY
+            });
+            let (state, plain) = chosen.cloned().unwrap_or_else(|| {
+                candidates
+                    .into_iter()
+                    .next()
+                    .unwrap_or((Decryption::WrongKey, Vec::new()))
+            });
+            let cut = cut.min(plain.len());
+            self.decryption = if names_plausibility(&plain[cut..]) >= DEFAULT_NAME_PLAUSIBILITY {
+                state
+            } else {
+                Decryption::WrongKey
+            };
+            self.toc_plain = Some(plain[..cut].to_vec());
+            self.names_plain = Some(plain[cut..].to_vec());
         }
 
         if let Some(toc) = &self.toc_plain {
@@ -154,7 +256,7 @@ impl Archive {
     pub fn toc_readable(&self) -> bool {
         matches!(
             self.decryption,
-            Decryption::Plaintext | Decryption::Aes256Ecb
+            Decryption::Plaintext | Decryption::Aes256Ecb | Decryption::WhitenedAesCbc
         )
     }
 
@@ -492,6 +594,73 @@ mod tests {
         // The nested directories must actually exist (not a flat layout).
         assert!(out.join("sub").is_dir());
         assert!(out.join("other").is_dir());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Build a small *encrypted* archive: the TOC||names blob is whitened-CBC ciphertext
+    /// (encrypted with a synthetic key-context), the data region is cleartext. Returns the
+    /// file path and the key-context blob to decrypt it with.
+    fn build_encrypted_archive(dir: &Path) -> (std::path::PathBuf, Vec<u8>) {
+        let names: Vec<u8> = b"\0hello.txt\0".to_vec();
+        let plain = b"hello world".to_vec();
+        let plain_defl = raw_deflate(&plain);
+
+        // One file entry under an unnamed root.
+        let tables_end = HEADER_SIZE + 2 * ENTRY_SIZE + names.len();
+        let block0 = tables_end.div_ceil(BLOCK_SIZE);
+        let mut toc: Vec<u8> = Vec::new();
+        toc.extend_from_slice(&dir_entry(0, 1, 1)); // 0 root -> [1]
+        toc.extend_from_slice(&bin_entry(
+            1,
+            plain_defl.len() as u32,
+            plain.len() as u32,
+            block0 as u32,
+        )); // 1 hello.txt
+
+        // Encrypt the TOC||names blob with a synthetic whitened-CBC key-context.
+        let mut key_ctx = vec![0u8; KEY_CTX_SIZE];
+        for (i, b) in key_ctx.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_mul(31).wrapping_add(7);
+        }
+        let cipher = WhitenedAesCbc::from_key_ctx(&key_ctx, None);
+        let mut blob = toc.clone();
+        blob.extend_from_slice(&names);
+        let enc = cipher.encrypt(&blob, None);
+
+        let data_start = block0 * BLOCK_SIZE;
+        let mut file = vec![0u8; data_start + BLOCK_SIZE];
+        let mut header = [0u8; HEADER_SIZE];
+        header[0..4].copy_from_slice(&RPF9_MAGIC.to_le_bytes());
+        header[4..8].copy_from_slice(&(toc.len() as u32).to_le_bytes());
+        header[8..12].copy_from_slice(&(names.len() as u32).to_le_bytes());
+        header[12..16].copy_from_slice(&1u32.to_le_bytes()); // encryption != 0 => encrypted TOC
+        file[..HEADER_SIZE].copy_from_slice(&header);
+        file[HEADER_SIZE..HEADER_SIZE + enc.len()].copy_from_slice(&enc);
+        file[data_start..data_start + plain_defl.len()].copy_from_slice(&plain_defl);
+
+        let path = dir.join("enc.rpf");
+        std::fs::write(&path, &file).unwrap();
+        (path, key_ctx)
+    }
+
+    #[test]
+    fn whitened_cbc_key_ctx_makes_the_toc_readable() {
+        let dir = std::env::temp_dir().join(format!("rpf9_wcbc_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (path, key_ctx) = build_encrypted_archive(&dir);
+
+        // No key: encrypted, TOC not readable.
+        let no_key = Archive::open(&path, None, None).unwrap();
+        assert_eq!(no_key.decryption, Decryption::EncryptedNoKey);
+        assert!(!no_key.toc_readable());
+
+        // With the key-context: whitened-CBC decrypts and the names look like ASCII.
+        let arc = Archive::open(&path, None, KeySource::from_key_ctx(&key_ctx)).unwrap();
+        assert_eq!(arc.decryption, Decryption::WhitenedAesCbc);
+        assert!(arc.toc_readable());
+        let paths: Vec<String> = arc.file_paths().into_iter().map(|(_, p)| p).collect();
+        assert_eq!(paths, vec!["hello.txt"]);
 
         std::fs::remove_dir_all(&dir).ok();
     }

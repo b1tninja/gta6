@@ -26,7 +26,7 @@ pub mod validate;
 #[cfg(feature = "python")]
 mod python;
 
-pub use archive::{Archive, Decryption};
+pub use archive::{Archive, Decryption, KeySource};
 pub use format::{Header, Rpf9Error};
 pub use recovery::{PeView, RecoveredKeyCtx, recover_key_ctx_blob, recover_key_ctx_report};
 pub use validate::{ValidationReport, validate_archive, validate_paths};

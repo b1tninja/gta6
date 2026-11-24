@@ -140,6 +140,22 @@ impl PeView {
         }
         Some(&self.map[off..end])
     }
+
+    /// Read the recovered key-context blob's bytes (for driving the whitened cipher).
+    ///
+    /// Returns the `length` bytes at `blob_off`, clamped to the map length. The blob
+    /// length is the recovered value (`0x10f4`); callers that need the full
+    /// [`crate::crypto::KEY_CTX_SIZE`] should pad (see [`crate::KeySource::from_key_ctx`]).
+    pub fn read_key_ctx_blob(&self, r: &RecoveredKeyCtx) -> Option<Vec<u8>> {
+        let end = r
+            .blob_off
+            .saturating_add(r.length as usize)
+            .min(self.map.len());
+        if r.blob_off >= self.map.len() || end <= r.blob_off {
+            return None;
+        }
+        Some(self.map[r.blob_off..end].to_vec())
+    }
 }
 
 /// One 24-byte provider-registry entry `{ key, val0, len }`.
