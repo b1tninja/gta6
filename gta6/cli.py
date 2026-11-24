@@ -321,39 +321,8 @@ def _cmd_extract_install(args: argparse.Namespace) -> int:
     return exit_code
 
 
-def _cmd_net_offline(args: argparse.Namespace) -> int:
-    """Block all outbound traffic for one exe, run it, and wait for it to exit."""
-    from gta6 import net_offline
-
-    forwarded: list[str] = []
-    if args.block_only:
-        forwarded.append("--block-only")
-    if args.unblock_only:
-        forwarded.append("--unblock-only")
-    if args.keep:
-        forwarded.append("--keep")
-    if args.no_elevate:
-        forwarded.append("--no-elevate")
-    if args.timeout is not None:
-        forwarded += ["--timeout", str(args.timeout)]
-    if args.exe is not None:
-        forwarded += ["--exe", str(args.exe)]
-    if args.prog_args:
-        # The child's own flags follow "--" so they never hit our option table.
-        forwarded += ["--", *args.prog_args]
-    return net_offline.main(forwarded)
-
-
 def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
-    # Everything after the first "--" is the child program's command line (only
-    # net-offline has one). Splice it out before parsing and hand it to the
-    # subcommand verbatim, so a child flag like "-n 2" never reaches argparse.
-    prog_args: list[str] = []
-    if "--" in argv:
-        i = argv.index("--")
-        prog_args = argv[i + 1 :]
-        argv = argv[:i]
 
     parser = argparse.ArgumentParser(prog="gta6", description="GTA VI RE helpers")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -504,25 +473,7 @@ def main(argv: list[str] | None = None) -> int:
     keyctx.add_argument("--manifest", type=Path, default=None)
     keyctx.set_defaults(func=_cmd_rpf9_recover_keyctx)
 
-    offline = sub.add_parser(
-        "net-offline",
-        help="Block all outbound network traffic for an exe, run it, wait for exit",
-    )
-    offline.add_argument(
-        "--exe",
-        type=Path,
-        default=None,
-        help="program to block and run (default: GTA6_GAME_EXE / game root)",
-    )
-    offline.add_argument("--block-only", action="store_true")
-    offline.add_argument("--unblock-only", action="store_true")
-    offline.add_argument("--keep", action="store_true", help="leave the rules in place")
-    offline.add_argument("--no-elevate", action="store_true", help="skip the UAC relaunch")
-    offline.add_argument("--timeout", type=float, default=None)
-    offline.set_defaults(func=_cmd_net_offline)
-
     args = parser.parse_args(argv)
-    args.prog_args = prog_args
     return args.func(args)
 
 
