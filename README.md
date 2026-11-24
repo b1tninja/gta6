@@ -115,12 +115,17 @@ absolute addresses are stored in this repo — they are read from the exe at run
 ## Offline run helper
 
 ```powershell
-python -m gta6 net-offline -- --timeout 600
+# native (rpfkit CLI)
+cargo run -p rpfkit --release -- net-offline -- --timeout 600
+# or, once built, the standalone binary:
+rpfkit net-offline -- --timeout 600
 ```
 
-Blocks all outbound traffic for the game executable (Windows Firewall rules, with
-self-elevation), launches it, and waits for it to exit — used to observe the game's
-behaviour with no network access.
+Blocks all outbound traffic for the game executable (Windows Firewall rules via
+`netsh advfirewall`, with UAC self-elevation), launches it, and waits for it to exit —
+used to observe the game's behaviour with no network access. This is the native port of
+the former `python -m gta6 net-offline`; the Win32 calls (elevation check, `ShellExecuteExW`
+relaunch, process wait) go through the `windows` crate directly.
 
 ## Research notes
 
@@ -154,13 +159,13 @@ raw key/template bytes lifted from the proprietary executable.
 ## Layout
 
 ```text
-rpfkit/            native Rust RPF9 reader + CLI + pyo3 bindings (maturin)
+rpfkit/            native Rust RPF9 reader + CLI (info/list/extract/validate/
+                   recover-keyctx/net-offline) + pyo3 bindings (maturin)
 gta6/
   rpf9/            pure-Python RPF9 model + key-recovery research tooling
   extract.py       extraction via the native rpfkit core
   rpfkit_native.py import bridge to the native module
   cli.py           `python -m gta6 ...` entry point
-  net_offline.py   offline run helper
 tests/             unit tests (synthetic fixtures; no game data)
 docs/notes/        local research notes (gitignored)
 tools/             one-off probe scripts (gitignored)

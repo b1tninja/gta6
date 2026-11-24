@@ -20,6 +20,7 @@ pub mod crypto;
 pub mod entries;
 pub mod format;
 pub mod keys;
+pub mod net_offline;
 pub mod recovery;
 pub mod validate;
 

@@ -4,11 +4,13 @@
 //! parallel (rayon); extraction inflates and writes entries in parallel.
 
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use clap::{Parser, Subcommand};
 use rpfkit::Archive;
 use rpfkit::KeySource;
 use rpfkit::keys::load_aes_key;
+use rpfkit::net_offline;
 use rpfkit::recovery::PeView;
 use rpfkit::validate::validate_paths;
 
@@ -65,6 +67,33 @@ enum Cmd {
         /// Also write the JSON report to this path.
         #[arg(long)]
         manifest: Option<PathBuf>,
+    },
+    /// Block all outbound network traffic for one exe, run it, and wait for it to exit.
+    ///
+    /// Windows only (netsh advfirewall). Re-launches itself through UAC when not elevated.
+    /// Everything after `--` is the game's own command line.
+    NetOffline {
+        /// Program to block and run (default: GTA6_GAME_EXE / game root).
+        #[arg(long)]
+        exe: Option<PathBuf>,
+        /// Add the block rules, do not run.
+        #[arg(long)]
+        block_only: bool,
+        /// Remove the block rules, do not run.
+        #[arg(long)]
+        unblock_only: bool,
+        /// Leave the block rules in place after the program exits.
+        #[arg(long)]
+        keep: bool,
+        /// Kill the program after this many seconds (default: wait forever).
+        #[arg(long)]
+        timeout: Option<f64>,
+        /// Do not relaunch through UAC when not already elevated.
+        #[arg(long)]
+        no_elevate: bool,
+        /// The program's own arguments (place after `--`).
+        #[arg(last = true)]
+        prog_args: Vec<String>,
     },
 }
 
@@ -232,5 +261,122 @@ fn run(cmd: Cmd) -> i32 {
                 1
             }
         },
+        Cmd::NetOffline {
+            exe,
+            block_only,
+            unblock_only,
+            keep,
+            timeout,
+            no_elevate,
+            prog_args,
+        } => net_offline_cmd(
+            exe,
+            block_only,
+            unblock_only,
+            keep,
+            timeout,
+            no_elevate,
+            prog_args,
+        ),
     }
+}
+
+/// `net-offline`: block outbound traffic for one exe, run it, wait for exit.
+///
+/// Mirrors the Python `gta6 net-offline`. The elevation re-launch rebuilds this
+/// subcommand's argv (minus the child's `--` args, which are re-appended) so the elevated
+/// child runs the same thing.
+#[allow(clippy::too_many_arguments)]
+fn net_offline_cmd(
+    exe: Option<PathBuf>,
+    block_only: bool,
+    unblock_only: bool,
+    keep: bool,
+    timeout: Option<f64>,
+    no_elevate: bool,
+    prog_args: Vec<String>,
+) -> i32 {
+    if !cfg!(windows) {
+        eprintln!("Windows only: uses netsh advfirewall.");
+        return 2;
+    }
+    if !net_offline::is_admin() && !no_elevate {
+        // Rebuild our own argv for the elevated relaunch (the child's args are re-appended
+        // after `--`). --no-elevate is added by self_reexec_elevated.
+        let mut argv: Vec<String> = vec!["net-offline".to_string()];
+        if block_only {
+            argv.push("--block-only".into());
+        }
+        if unblock_only {
+            argv.push("--unblock-only".into());
+        }
+        if keep {
+            argv.push("--keep".into());
+        }
+        if let Some(t) = timeout {
+            argv.extend(["--timeout".to_string(), t.to_string()]);
+        }
+        if let Some(e) = &exe {
+            argv.extend(["--exe".to_string(), e.display().to_string()]);
+        }
+        if !prog_args.is_empty() {
+            argv.push("--".into());
+            argv.extend(prog_args.iter().cloned());
+        }
+        return net_offline::self_reexec_elevated(&argv);
+    }
+    if !net_offline::is_admin() {
+        eprintln!(
+            "not elevated and --no-elevate was given, so netsh will refuse to write the \
+             rules. Re-run without --no-elevate to get a UAC prompt."
+        );
+    }
+
+    if unblock_only {
+        let res = net_offline::unblock(true);
+        // Nothing to remove is a success, not a failure.
+        return if res.iter().all(|r| r.ok()) { 0 } else { 1 };
+    }
+
+    // Resolve the program: --exe, else the first child arg, else the env/default.
+    let (exe, prog_args) = match exe {
+        Some(e) => (e.display().to_string(), prog_args),
+        None => match prog_args.split_first() {
+            Some((first, rest)) => (first.clone(), rest.to_vec()),
+            None => match net_offline::default_game_exe() {
+                Some(p) => {
+                    let s = p.display().to_string();
+                    eprintln!("  using {s}");
+                    (s, Vec::new())
+                }
+                None => {
+                    eprintln!(
+                        "need a program path, or set GTA6_GAME_EXE (or run from the game \
+                         root) -- or use --unblock-only"
+                    );
+                    return 2;
+                }
+            },
+        },
+    };
+
+    let added = net_offline::block(&exe, true);
+    if !added.iter().all(|r| r.ok()) {
+        eprintln!("could not install the block rules; nothing launched.");
+        net_offline::unblock(true);
+        return 1;
+    }
+    if block_only {
+        eprintln!("blocked {exe}; remove later with --unblock-only");
+        return 0;
+    }
+
+    let dur = timeout.map(Duration::from_secs_f64);
+    let code = net_offline::run_blocked(&exe, &prog_args, dur);
+    if keep {
+        eprintln!("  --keep: leaving the block rules in place");
+    } else {
+        net_offline::unblock(true);
+    }
+    code
 }
