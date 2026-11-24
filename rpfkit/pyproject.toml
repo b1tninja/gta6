@@ -1,0 +1,36 @@
+# Python wheel build for the rpfkit native extension module.
+#
+# This is a *separate* build from the top-level `gta6` package (which stays pure
+# hatchling). maturin compiles the `python` feature of the Rust crate in this
+# directory into an abi3 extension module importable as `import rpfkit`. The `gta6`
+# package imports it at runtime for the AES-NI / multithreaded RPF9 reader.
+#
+# Build (from this directory, with maturin on PATH):
+#   maturin build --release        # wheel into target/wheels/
+#   maturin develop --release      # install into the active venv
+#
+# abi3-py39 (set on the pyo3 dependency in Cargo.toml) means one wheel serves
+# CPython 3.9+, matching the crate's `requires-python`.
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "rpfkit"
+version = "0.1.0"
+description = "Native RPF9 (GTA VI Xbox) archive reader: AES-NI + multithreaded extraction and validation."
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.9"
+authors = [{ name = "Justin Capella" }]
+classifiers = [
+  "Programming Language :: Rust",
+  "Programming Language :: Python :: Implementation :: CPython",
+]
+
+[tool.maturin]
+# Build the cdylib with the `python` feature enabled (pulls in pyo3).
+features = ["python"]
+# The extension module is named `rpfkit` (matches #[pyo3(name = "rpfkit")] in
+# src/python.rs); maturin wraps it in a small package so `import rpfkit` works.
+module-name = "rpfkit.rpfkit"

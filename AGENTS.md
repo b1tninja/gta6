@@ -16,11 +16,20 @@ python -m pytest -q
 python -m ruff check .
 ```
 
+The native reader lives in `rpfkit/` (Rust + pyo3). Build/test it from `rpfkit/`:
+
+```
+cargo test
+cargo clippy --all-targets --features python -- -D warnings
+cargo fmt --check
+python -m maturin develop --release   # install the `rpfkit` module into the venv
+```
+
 ## Invariants
 
 - **Never** commit game install files or extraction output. `GTA6_ARTIFACT_ROOT` (from `.env`) is the only place for artifacts.
 - `.env` is local; `.env.example` documents variables.
-- Xbox VI `.rpf` files are **RPF9**; bundled `rpf-cli` is RPF7-only — document blockers in manifests, do not pretend extraction succeeded.
+- Xbox VI `.rpf` files are **RPF9**. Extraction runs through the native `rpfkit` reader; document blockers in manifests (e.g. `wrong_aes_key_or_cipher`) and do not pretend extraction succeeded.
 
 ## Finding work
 

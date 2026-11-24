@@ -34,14 +34,24 @@ def _path_from_env(key: str, default: str | None = None) -> Path:
     return Path(raw).expanduser().resolve()
 
 
+def _path_under(root: Path, key: str, default: str) -> Path:
+    """A path that may be given relative to ``root`` (e.g. the game install).
+
+    Absolute values are used as-is; a bare name (the default) resolves under ``root``.
+    """
+    _ensure_dotenv()
+    raw = os.environ.get(key, default) or default
+    path = Path(raw).expanduser()
+    return path if path.is_absolute() else (root / path).resolve()
+
+
 @dataclass(frozen=True, slots=True)
 class Gta6Paths:
     """Resolved paths for game install and out-of-repo artifacts."""
 
     game_root: Path
     artifact_root: Path
-    rpf_cli: Path
-    rpf_extractor_dir: Path
+    game_exe: Path
 
     @property
     def extractions_dir(self) -> Path:
@@ -66,11 +76,13 @@ class Gta6Paths:
 
 
 def load_paths() -> Gta6Paths:
-    # No defaults: the game install and the RPF-Extractor live outside the repo and
-    # differ per machine, so they must come from .env (see .env.example).
+    # No defaults for the game install / artifact root: they live outside the repo and
+    # differ per machine, so they must come from .env (see .env.example). The game exe is
+    # optional (defaults to the conventional name under the game root) and only needed to
+    # recover the whitened-CBC key-context; extraction still runs without it.
+    game_root = _path_from_env("GTA6_GAME_ROOT")
     return Gta6Paths(
-        game_root=_path_from_env("GTA6_GAME_ROOT"),
+        game_root=game_root,
         artifact_root=_path_from_env("GTA6_ARTIFACT_ROOT"),
-        rpf_cli=_path_from_env("GTA6_RPF_CLI"),
-        rpf_extractor_dir=_path_from_env("GTA6_RPF_EXTRACTOR_DIR"),
+        game_exe=_path_under(game_root, "GTA6_GAME_EXE", "game_scarlett_master.exe"),
     )

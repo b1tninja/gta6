@@ -6,12 +6,12 @@ import sys
 from pathlib import Path
 
 from gta6.config import load_paths
-from gta6.extract_piliii import extract_rpf
-from gta6.rpf import iter_rpf_files, rpf_cli_list, script_archives
+from gta6.extract import extract_rpf
+from gta6.rpf import iter_rpf_files, script_archives
 from gta6.rpf9.archive import Rpf9Archive
-from gta6.rpf9.extract import extract_rpf9
 from gta6.rpf9.format import find_rpf9_bases
 from gta6.rpf9.keys import load_aes_key, scan_exe_for_key_candidates
+from gta6.rpfkit_native import require_native
 
 
 def _cmd_paths(_: argparse.Namespace) -> int:
@@ -22,8 +22,7 @@ def _cmd_paths(_: argparse.Namespace) -> int:
         "artifact_root": str(p.artifact_root),
         "extractions_dir": str(p.extractions_dir),
         "manifests_dir": str(p.manifests_dir),
-        "rpf_cli": str(p.rpf_cli),
-        "rpf_extractor_dir": str(p.rpf_extractor_dir),
+        "game_exe": str(p.game_exe),
     }
     print(json.dumps(rows, indent=2))
     return 0
@@ -44,7 +43,13 @@ def _cmd_inventory(args: argparse.Namespace) -> int:
 def _cmd_rpf_info(args: argparse.Namespace) -> int:
     p = load_paths()
     arch = args.archive if args.archive.is_absolute() else p.game_root / args.archive
-    print(rpf_cli_list(p.rpf_cli, arch, pattern=args.pattern))
+    native = require_native()
+    key_ctx_exe = p.game_exe if p.game_exe.is_file() else None
+    arc = native.Archive(arch, key_ctx_exe=key_ctx_exe)
+    paths = arc.list_paths()
+    if args.pattern:
+        paths = [x for x in paths if args.pattern in x]
+    print(json.dumps({"info": arc.info(), "paths": paths}, indent=2))
     return 0
 
 
@@ -89,7 +94,7 @@ def _cmd_rpf9_extract(args: argparse.Namespace) -> int:
         if args.output and args.output.is_absolute()
         else p.extractions_dir / (args.output or arch.stem)
     )
-    manifest = extract_rpf9(
+    manifest = extract_rpf(
         arch,
         out,
         paths=p,
@@ -366,7 +371,7 @@ def main(argv: list[str] | None = None) -> int:
     info.add_argument("pattern", nargs="?", default=None)
     info.set_defaults(func=_cmd_rpf_info)
 
-    ext = sub.add_parser("extract-rpf", help="Extract one archive via Piliii + rpf-cli")
+    ext = sub.add_parser("extract-rpf", help="Extract one archive via the native rpfkit reader")
     ext.add_argument("archive", type=Path)
     ext.add_argument("-o", "--output", type=Path, default=None)
     ext.set_defaults(func=_cmd_extract_rpf)
@@ -387,7 +392,7 @@ def main(argv: list[str] | None = None) -> int:
     r9info.add_argument("archive", type=Path)
     r9info.set_defaults(func=_cmd_rpf9_info)
 
-    r9ext = sub.add_parser("rpf9-extract", help="Extract via in-tree RPF9 reader")
+    r9ext = sub.add_parser("rpf9-extract", help="Extract via the native rpfkit reader")
     r9ext.add_argument("archive", type=Path)
     r9ext.add_argument("-o", "--output", type=Path, default=None)
     r9ext.add_argument("--no-decompress", action="store_true")

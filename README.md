@@ -2,8 +2,10 @@
 
 Tools and reverse-engineering notes for **GTA VI** (current focus: the Xbox Series
 install layout). This repository is dedicated to **clean-room** tooling: the RPF9
-reader/extractor under `gta6/rpf9/` is written from observed file behaviour and
-format analysis, not derived from any existing extractor.
+reader/extractor is written from observed file behaviour and format analysis, not
+derived from any existing extractor. The fast path is the native Rust crate under
+`rpfkit/` (AES-NI + multithreaded, with Python bindings); a pure-Python model of the
+same format lives under `gta6/rpf9/` and backs the key-recovery research tooling.
 
 Game files and extracted output stay **outside** this repository. Paths come from
 `.env` (see `.env.example`). No game data, keys, or extraction output is committed.
@@ -20,10 +22,23 @@ copy .env.example .env
 
 Optional extras:
 
-- `.[crypto]` — `cryptography`, used for the AES fast paths.
+- `.[crypto]` — `cryptography`, used for the AES fast paths in the Python model.
 - `.[disasm]` — `capstone` + `keystone-engine`, used by the key-context recovery
   tool to assemble/disassemble byte patterns. The module degrades gracefully
   without them.
+
+### Native `rpfkit` module
+
+The extraction/validate commands run through the native Rust core, built separately
+with [maturin](https://www.maturin.rs):
+
+```powershell
+cd rpfkit
+python -m maturin develop --release   # installs the `rpfkit` module into the active venv
+```
+
+The pure-Python package does not hard-require it; the key-research commands run
+without it, and the native-backed commands report a clear error if it is missing.
 
 ## Paths
 
@@ -45,36 +60,36 @@ python -m gta6 inventory --scripts-only
 
 ## Extraction
 
-### Piliii RPF-Extractor (RPF7)
-
-Headless wrapper around the bundled `extract.py` and `rpf-cli.exe`:
+Extraction runs through the native `rpfkit` reader (see above). Xbox builds use
+**RPF9** (magic `0x52504639`): the reader parses the container, entry table and name
+table, decrypts the file tables with the whitened AES-256-CBC cipher, and inflates the
+(cleartext) data region.
 
 ```powershell
-python -m gta6 extract-rpf pack\story000\story000_script.rpf
+python -m gta6 rpf-info      pack\story000\story000_script.rpf
+python -m gta6 extract-rpf   pack\story000\story000_script.rpf
 python -m gta6 extract-install
-```
-
-`rpf-cli` is RPF7-only; it does not understand the Xbox RPF9 layout.
-
-### RPF9 (in-tree, clean-room)
-
-Xbox builds use **RPF9** (magic `0x52504639`). The in-tree reader parses the
-container, entry table and name table, and inflates the (cleartext) data region:
-
-```powershell
 python -m gta6 rpf9-info     pack\story000\story000_script.rpf
 python -m gta6 rpf9-extract  pack\story000\story000_script.rpf
 python -m gta6 rpf9-validate pack\story000\story000_script.rpf
 ```
 
+`extract-rpf` / `extract-install` / `rpf9-extract` all use the native reader;
+`extract-install` defaults to every `*script*.rpf` under the game root. The key-context
+blob is recovered from the game executable (`GTA6_GAME_EXE`, default
+`game_scarlett_master.exe` under the game root). A raw key (the earlier ECB hypothesis)
+can also be supplied via `GTA6_AES_KEY_HEX` / `GTA6_AES_KEY_FILE`; when both are present
+the whitened cipher is tried first.
+
 `rpf9-validate` checks an archive **structurally** (header self-consistency, region
 bounds, entry-table coherence, and that the data region inflates). It does not match
 any build-specific bytes, so it stays valid across builds and the production release.
 
-The TOC and name tables are **encrypted** on this retail layout. Set
-`GTA6_AES_KEY_HEX` (hex) or `GTA6_AES_KEY_FILE` (raw key file) in `.env` once a
-key is known; without it, `rpf9-extract` reports the archive as `blocked` and
-lists the data region only.
+The TOC and name tables are **encrypted** on this retail layout. Until the whitening
+byte orderings are pinned by a dynamic trace, real archives report `blocked`
+(`wrong_aes_key_or_cipher`) rather than extracting — the names-plausibility oracle is
+the acceptance gate, so an unproven cipher model degrades to `wrong_key` instead of
+producing garbage.
 
 ## Key recovery
 
@@ -139,8 +154,11 @@ raw key/template bytes lifted from the proprietary executable.
 ## Layout
 
 ```text
+rpfkit/            native Rust RPF9 reader + CLI + pyo3 bindings (maturin)
 gta6/
-  rpf9/            clean-room RPF9 reader (format, entries, crypto, extract)
+  rpf9/            pure-Python RPF9 model + key-recovery research tooling
+  extract.py       extraction via the native rpfkit core
+  rpfkit_native.py import bridge to the native module
   cli.py           `python -m gta6 ...` entry point
   net_offline.py   offline run helper
 tests/             unit tests (synthetic fixtures; no game data)
