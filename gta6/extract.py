@@ -110,6 +110,72 @@ def extract_rpf(
     return manifest
 
 
-def _write_manifest(paths: Gta6Paths, archive: Path, manifest: dict[str, object]) -> None:
-    out = paths.manifests_dir / f"{archive.stem}-extract.json"
+def _write_manifest(
+    paths: Gta6Paths,
+    archive: Path,
+    manifest: dict[str, object],
+    *,
+    suffix: str = "extract",
+) -> dict[str, object]:
+    out = paths.manifests_dir / f"{archive.stem}-{suffix}.json"
     out.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    return manifest
+
+
+def extract_scripts(
+    *,
+    paths: Gta6Paths | None = None,
+    inflate_each: bool = True,
+) -> list[dict[str, object]]:
+    """Extract every script archive under the game root into ``rpf_output_root``.
+
+    The script archives' TOC/names tables are still encrypted (the whitening orderings
+    are unpinned), so a normal ``extract_rpf`` is ``blocked``. The data region is
+    cleartext though, so this falls back to a key-free raw-data dump: each archive's
+    content is written under ``rpf_output_root/<archive-stem>/``. When the TOC *is*
+    readable the proper directory tree is extracted instead.
+
+    Returns one manifest dict per archive (also written under ``manifests/``).
+    """
+    from gta6.rpf import script_archives  # local import: keeps module import light
+
+    paths = paths or load_paths()
+    paths.rpf_output_root.mkdir(parents=True, exist_ok=True)
+    native: Any = require_native()
+
+    manifests: list[dict[str, object]] = []
+    for archive in script_archives(paths.game_root):
+        dest_dir = paths.rpf_output_root / archive.stem
+        manifest: dict[str, object] = {
+            "status": "pending",
+            "archive": str(archive),
+            "output_dir": str(dest_dir),
+            "timestamp": datetime.now(UTC).isoformat(),
+        }
+        try:
+            arc = native.Archive(archive, key_ctx_exe=_key_ctx_exe(paths))
+        except Exception as exc:  # native Rpf9Error (I/O / format)
+            manifest["status"] = "error"
+            manifest["error"] = str(exc)
+            manifests.append(_write_manifest(paths, archive, manifest, suffix="scripts"))
+            continue
+
+        manifest["header"] = arc.info()
+        if arc.toc_readable:
+            stats = arc.extract_all(dest_dir, decompress=True)
+            manifest["status"] = "ok"
+            manifest["mode"] = "toc_tree"
+            manifest["stats"] = stats
+        else:
+            # TOC still encrypted: dump the cleartext data region (no key needed).
+            stats = arc.dump_data(dest_dir / "data", inflate_each=inflate_each)
+            manifest["status"] = "dumped"
+            manifest["mode"] = "raw_data"
+            manifest["reason"] = "encrypted_toc"
+            manifest["stats"] = stats
+            manifest["hint"] = (
+                "TOC/names still encrypted; wrote the cleartext data region. "
+                "Streams are raw-deflate payloads (script bytecode/tables)."
+            )
+        manifests.append(_write_manifest(paths, archive, manifest, suffix="scripts"))
+    return manifests

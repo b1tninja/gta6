@@ -12,6 +12,7 @@ python -m gta6 paths
 python -m gta6 inventory --scripts-only
 python -m gta6 rpf-info pack\\story000\\story000_script.rpf
 python -m gta6 rpf9-extract pack\\story000\\story000_script.rpf
+python -m gta6 extract-scripts
 python -m pytest -q
 python -m ruff check .
 ```

@@ -54,6 +54,20 @@ enum Cmd {
     },
     /// Structurally validate one or more archives (parallel).
     Validate { paths: Vec<PathBuf> },
+    /// Write the raw data region (no key / no readable TOC needed).
+    ///
+    /// The data region is cleartext, so this works while the TOC/names tables are still
+    /// encrypted. Default writes the whole region verbatim to `--out`; `--inflate-each`
+    /// instead carves the raw-deflate streams into separate `out.NNNN.bin` files.
+    DumpData {
+        path: PathBuf,
+        /// Output file (raw copy) or base name (with --inflate-each).
+        #[arg(long)]
+        out: PathBuf,
+        /// Carve and inflate each raw-deflate stream into its own file.
+        #[arg(long)]
+        inflate_each: bool,
+    },
     /// Recover the AES key-context blob address from the exe (no key material).
     RecoverKeyctx {
         /// Path to game_scarlett_master.exe (or a leaked build).
@@ -213,6 +227,30 @@ fn run(cmd: Cmd) -> i32 {
                 }
             }
         }
+        Cmd::DumpData {
+            path,
+            out,
+            inflate_each,
+        } => match Archive::open(&path, None, KeySource::default()) {
+            Ok(arc) => match arc.dump_data(&out, inflate_each) {
+                Ok((n, bytes)) if inflate_each => {
+                    println!("wrote {n} streams, {bytes} bytes under {}.*", out.display());
+                    0
+                }
+                Ok((_, bytes)) => {
+                    println!("wrote {bytes} bytes to {}", out.display());
+                    0
+                }
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    1
+                }
+            },
+            Err(e) => {
+                eprintln!("error: {e}");
+                1
+            }
+        },
         Cmd::Validate { paths } => {
             let summary = validate_paths(&paths, None);
             for r in &summary.rows {

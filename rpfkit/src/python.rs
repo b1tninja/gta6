@@ -162,6 +162,26 @@ impl PyArchive {
         Ok(d)
     }
 
+    /// Write the raw data region to `dest` — no key / no readable TOC needed.
+    ///
+    /// The data region is cleartext, so this works while the TOC/names tables are still
+    /// encrypted. `inflate_each=True` carves the raw-deflate streams into separate
+    /// `dest.NNNN.bin` files; otherwise the whole region is copied verbatim to `dest`.
+    /// Returns `{streams, bytes}`.
+    #[pyo3(signature = (dest, *, inflate_each=false))]
+    fn dump_data<'py>(
+        &self,
+        py: Python<'py>,
+        dest: PathBuf,
+        inflate_each: bool,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let (streams, bytes) = self.inner.dump_data(&dest, inflate_each).map_err(pyerr)?;
+        let d = PyDict::new(py);
+        d.set_item("streams", streams)?;
+        d.set_item("bytes", bytes)?;
+        Ok(d)
+    }
+
     fn __repr__(&self) -> String {
         format!(
             "Archive(path='{}', toc_readable={})",

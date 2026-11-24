@@ -419,6 +419,79 @@ impl Archive {
         }
         Ok((files, total, skipped_dirs))
     }
+
+    /// Write the **raw data region** to `dest` — no key and no readable TOC required.
+    ///
+    /// The data region (everything from [`Header::data_offset`] to the end of the base)
+    /// is cleartext, so this works even while the TOC/names tables are still encrypted.
+    /// It is the exploration fallback: the concatenated raw-deflate streams can be
+    /// carved and inspected directly when the entry table cannot yet be decrypted.
+    ///
+    /// With `inflate_each`, the region is scanned for raw-deflate (wbits = -15) streams
+    /// and each is written as a separate `dest.NNNN.bin` file; otherwise the whole region
+    /// is copied verbatim to `dest`. Returns `(streams_written, total_bytes)` — for a raw
+    /// copy, `(1, region_len)`.
+    pub fn dump_data(&self, dest: &Path, inflate_each: bool) -> Result<(usize, usize), Rpf9Error> {
+        let start = self.header.data_offset() as usize;
+        // The data region runs to the end of the file. (The `RPF9` magic also occurs
+        // inside the encrypted TOC/names blob, so scanning for a "next base" would
+        // truncate the region to a few KB; concatenated bases are not split here.)
+        let end = self.map.len();
+        if start >= end {
+            return Err(Rpf9Error::Format {
+                path: self.path.display().to_string(),
+                msg: format!("no data region (data_offset {start} >= end {end})"),
+            });
+        }
+        let region = &self.map[start..end];
+        if !inflate_each {
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(dest, region)?;
+            return Ok((1, region.len()));
+        }
+
+        // Carve raw-deflate streams: try to inflate at every byte; a stream that decodes
+        // to non-trivial output is emitted, then the scan resumes after it. This is a
+        // best-effort content dump (no entry table), so stream boundaries are inferred
+        // from where a valid deflate stream decodes rather than from the TOC.
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let mut written = 0usize;
+        let mut total = 0usize;
+        let mut i = 0usize;
+        let mut stream_no = 0u32;
+        while i < region.len() {
+            let (plain, consumed) = inflate_at(region, i);
+            if plain.len() >= 16 && consumed > 0 {
+                let path = dest.with_extension(format!("{stream_no:04}.bin"));
+                std::fs::write(&path, &plain)?;
+                written += 1;
+                total += plain.len();
+                stream_no += 1;
+                i += consumed;
+            } else {
+                i += 1;
+            }
+        }
+        Ok((written, total))
+    }
+}
+
+/// Try to raw-inflate a deflate stream starting at `at`. Returns the decoded bytes and
+/// how many input bytes the stream consumed, or `(empty, 0)` when nothing valid starts
+/// there. A trailing garbage byte after a valid stream still counts as a hit (the
+/// decoded length is what matters for exploration).
+fn inflate_at(data: &[u8], at: usize) -> (Vec<u8>, usize) {
+    use std::io::Read;
+    let mut dec = DeflateDecoder::new(&data[at..]);
+    let mut out = Vec::new();
+    match dec.read_to_end(&mut out) {
+        Ok(n) if n > 0 => (out, n),
+        _ => (Vec::new(), 0),
+    }
 }
 
 #[cfg(test)]

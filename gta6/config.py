@@ -52,6 +52,7 @@ class Gta6Paths:
     game_root: Path
     artifact_root: Path
     game_exe: Path
+    rpf_output_root: Path
 
     @property
     def extractions_dir(self) -> Path:
@@ -81,8 +82,15 @@ def load_paths() -> Gta6Paths:
     # optional (defaults to the conventional name under the game root) and only needed to
     # recover the whitened-CBC key-context; extraction still runs without it.
     game_root = _path_from_env("GTA6_GAME_ROOT")
+    artifact_root = _path_from_env("GTA6_ARTIFACT_ROOT")
     return Gta6Paths(
         game_root=game_root,
-        artifact_root=_path_from_env("GTA6_ARTIFACT_ROOT"),
+        artifact_root=artifact_root,
         game_exe=_path_under(game_root, "GTA6_GAME_EXE", "game_scarlett_master.exe"),
+        # Where `gta6 extract-scripts` writes extracted content. Defaults to a sibling
+        # of the artifact root (D:\data\gta6\rpf) so it is out of the repo but easy to
+        # browse; override with GTA6_RPF_OUTPUT_ROOT.
+        rpf_output_root=_path_from_env(
+            "GTA6_RPF_OUTPUT_ROOT", str(artifact_root.parent / "rpf")
+        ),
     )

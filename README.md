@@ -66,6 +66,7 @@ python -m gta6 rpf-info      pack\story000\story000_script.rpf
 python -m gta6 extract-rpf   pack\story000\story000_script.rpf
 python -m gta6 extract-install
 python -m gta6 rpf9-extract  pack\story000\story000_script.rpf
+python -m gta6 extract-scripts
 ```
 
 `extract-rpf` / `extract-install` / `rpf9-extract` all use the native reader;
@@ -74,6 +75,14 @@ blob is recovered from the game executable (`GTA6_GAME_EXE`, default
 `game_scarlett_master.exe` under the game root). A raw key (the earlier ECB hypothesis)
 can also be supplied via `GTA6_AES_KEY_HEX` / `GTA6_AES_KEY_FILE`; when both are present
 the whitened cipher is tried first.
+
+`extract-scripts` writes every `*script*.rpf` into `GTA6_RPF_OUTPUT_ROOT` (default
+`D:\data\gta6\rpf`). While the TOC/names tables are still encrypted (the whitening byte
+orderings are unpinned), a normal extract is `blocked`, so this falls back to a
+**key-free raw-data dump**: the cleartext data region is carved into individual
+raw-deflate streams (`<archive-stem>/data.NNNN.bin`) so the script content can be
+explored now. Pass `--raw` to copy the region verbatim instead. When the TOC *is*
+readable, the proper directory tree is extracted instead.
 
 Structural validation (header self-consistency, region bounds, entry-table coherence,
 and that the data region inflates) lives in the native reader — run it with
@@ -157,9 +166,10 @@ raw key/template bytes lifted from the proprietary executable.
 
 ```text
 rpfkit/            native Rust RPF9 reader + CLI (info/list/extract/validate/
-                   recover-keyctx/net-offline) + pyo3 bindings (maturin)
+                   dump-data/recover-keyctx/net-offline) + pyo3 bindings (maturin)
 gta6/
-  extract.py       extraction via the native rpfkit core
+  config.py        .env path resolution (incl. GTA6_RPF_OUTPUT_ROOT)
+  extract.py       extraction via the native rpfkit core (incl. extract_scripts)
   rpfkit_native.py import bridge to the native module
   cli.py           `python -m gta6 ...` entry point
 tests/             unit tests (synthetic fixtures; no game data)

@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from gta6.config import load_paths
-from gta6.extract import extract_rpf
+from gta6.extract import extract_rpf, extract_scripts
 from gta6.rpf import iter_rpf_files, script_archives
 from gta6.rpfkit_native import require_native
 
@@ -19,6 +19,7 @@ def _cmd_paths(_: argparse.Namespace) -> int:
         "artifact_root": str(p.artifact_root),
         "extractions_dir": str(p.extractions_dir),
         "manifests_dir": str(p.manifests_dir),
+        "rpf_output_root": str(p.rpf_output_root),
         "game_exe": str(p.game_exe),
     }
     print(json.dumps(rows, indent=2))
@@ -81,6 +82,17 @@ def _cmd_rpf9_extract(args: argparse.Namespace) -> int:
     return 0 if manifest.get("status") == "ok" else 1
 
 
+def _cmd_extract_scripts(args: argparse.Namespace) -> int:
+    """Extract every script archive into rpf_output_root (raw-data dump if TOC encrypted)."""
+    manifests = extract_scripts(inflate_each=not args.raw)
+    for m in manifests:
+        print(json.dumps(m, indent=2))
+    # Non-zero only if every archive errored; a raw-data dump counts as success.
+    if manifests and all(m.get("status") == "error" for m in manifests):
+        return 1
+    return 0
+
+
 def _cmd_extract_install(args: argparse.Namespace) -> int:
     """Extract script RPFs first, then any other paths passed on CLI."""
     p = load_paths()
@@ -140,6 +152,18 @@ def main(argv: list[str] | None = None) -> int:
     r9ext.add_argument("-o", "--output", type=Path, default=None)
     r9ext.add_argument("--no-decompress", action="store_true")
     r9ext.set_defaults(func=_cmd_rpf9_extract)
+
+    scr = sub.add_parser(
+        "extract-scripts",
+        help="Extract every *script*.rpf into rpf_output_root "
+        "(raw-data dump while the TOC is encrypted)",
+    )
+    scr.add_argument(
+        "--raw",
+        action="store_true",
+        help="Copy the data region verbatim instead of carving each deflate stream",
+    )
+    scr.set_defaults(func=_cmd_extract_scripts)
 
     args = parser.parse_args(argv)
     return args.func(args)
